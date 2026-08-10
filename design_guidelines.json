@@ -1,0 +1,150 @@
+{
+  "theme": "light",
+  "archetype": "Swiss & High-Contrast (Logistics Control Room)",
+  "typography": {
+    "family": "Inter, system-ui, sans-serif",
+    "weights": {
+      "regular": "400",
+      "semibold": "600"
+    },
+    "scales": {
+      "h1_page_title": "text-2xl sm:text-[32px] font-semibold leading-[32px]",
+      "h2_section_title": "text-lg sm:text-[26px] font-semibold leading-[26px]",
+      "body": "text-sm leading-[20px]",
+      "small_metadata": "text-xs leading-[18px]",
+      "table_header": "text-xs font-semibold leading-[16px]"
+    },
+    "variants": {
+      "tabular_nums": "Use tabular-nums class for order ages, quantities, prices, and timestamps."
+    }
+  },
+  "colors": {
+    "surface": {
+      "canvas": "#F5F7FA",
+      "default": "#FFFFFF",
+      "subtle": "#EEF2F6"
+    },
+    "text": {
+      "primary": "#17202A",
+      "secondary": "#52606D"
+    },
+    "border": {
+      "default": "#D8E0E8"
+    },
+    "brand": {
+      "primary": "#145CFF"
+    },
+    "status": {
+      "success": "#16794B",
+      "warning": "#A15C00",
+      "danger": "#B42318",
+      "info": "#175CD3",
+      "neutral": "#667085"
+    },
+    "semantic_backgrounds": "Use light tints of status colors with WCAG AA contrast. Color never carries meaning without text or iconography."
+  },
+  "spacing": {
+    "base": "4px",
+    "scale": [4, 8, 12, 16, 24, 32, 48],
+    "card_padding": "16px or 24px (p-4 or p-6)",
+    "table_row_height": {
+      "compact": "44px",
+      "default": "52px"
+    },
+    "input_height": {
+      "compact": "36px",
+      "default": "40px"
+    }
+  },
+  "radii": {
+    "controls": "6px (rounded-md)",
+    "cards": "8px (rounded-lg)",
+    "status_chips": "9999px (rounded-full) for compact statuses"
+  },
+  "layouts": {
+    "structure": "desktop-first 1440x900",
+    "sidebar": "Left nav 240px expanded / 72px collapsed",
+    "main_content": "Max reading column 760px; Dense tables full width",
+    "header": "Sticky page header",
+    "top_bar": "Includes sidebar toggle, global search (/ shortcut), Create menu, integration-health indicator, notifications, user menu."
+  },
+  "grids": {
+    "dashboard_overview": "Mode B: High Density Grid. Base Grid: grid-cols-1 md:grid-cols-3 lg:grid-cols-4. Gap: gap-4 or gap-6. Use col-span logic for main charts and summary metrics."
+  },
+  "visual_enhancers": {
+    "shadows": "Subtle shadows for cards, 1px solid borders. Do not use glassmorphism for operational health/data apps. Use flat solid surfaces instead.",
+    "borders": "Expose the skeleton for tables and data arrays using 1px border.default (#D8E0E8)."
+  },
+  "motion": {
+    "micro_interactions": "Hover states on all interactive elements (buttons, table rows, cards). Subtle lift (-translate-y-1) and shadow increase on actionable cards.",
+    "transitions": "Use specific properties (e.g., transition: background-color 0.2s ease, transform 0.2s ease). Do NOT use 'transition: all'."
+  },
+  "accessibility": {
+    "contrast": "Ensure 4.5:1 ratio for normal text. Use semantic text/iconography alongside colors.",
+    "testing": "All interactive and key informational elements MUST include a data-testid attribute (e.g., data-testid='order-table-row', data-testid='global-search-input').",
+    "focus": "Clear focus rings using ring-brand-primary."
+  },
+  "formatting": {
+    "date": "10.08.2026",
+    "time": "24-hour time (e.g., 14:30)",
+    "timezone": "Europe/Zurich",
+    "currency": "CHF 859.00",
+    "language": "English UI, German-ready structure."
+  },
+  "component_guidelines": {
+    "buttons": "Primary (brand.primary background, text-white), Secondary (surface.default background, border.default, text.primary), Quiet (transparent background, text.secondary, hover:surface.subtle), Danger (status.danger text/border). Height: 36px or 40px.",
+    "status_chip": "Pill shape (rounded-full), includes icon + text, uses status colors.",
+    "severity_indicator": "Small semantic dot or icon mapping to status.danger/warning/info.",
+    "data_table": "Dense tables, full width. Include saved views, 44px or 52px row height, sticky header. Columns include severity, reason, owner, etc.",
+    "drawer": "Right-side detail drawer for Work Queue and Order detail. width ~360px-400px.",
+    "inbox_workspace": "3-pane case workspace: conversation list (320px), thread + composer, context pane (360px).",
+    "toast": "Use sonner for toast with undo functionality.",
+    "automation_block": "Trigger -> Facts -> Decision -> Action format."
+  },
+  "icons": {
+    "library": "lucide-react",
+    "usage": "Use crisp, standard icons (strokeWidth={2}). Use specific semantic icons for status (CheckCircle2, AlertTriangle, XCircle, Info)."
+  },
+  "image_urls": [
+    {
+      "category": "User Avatar / Headshot",
+      "description": "Professional user headshot for header and table owner columns.",
+      "url": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTZ8MHwxfHNlYXJjaHwyfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc4NjIwMzYxNXww&ixlib=rb-4.1.0&q=85"
+    },
+    {
+      "category": "User Avatar / Headshot 2",
+      "description": "Professional user headshot for Inbox or chat threads.",
+      "url": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTZ8MHwxfHNlYXJjaHwzfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc4NjIwMzYxNXww&ixlib=rb-4.1.0&q=85"
+    },
+    {
+      "category": "Product / Gadget",
+      "description": "Electronics gadget for order items and inventory lists.",
+      "url": "https://images.unsplash.com/photo-1498049794561-7780e7231661?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2OTV8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBlbGVjdHJvbmljcyUyMGdhZGdldCUyMHByb2R1Y3R8ZW58MHx8fHwxNzg2MzUwMDExfDA&ixlib=rb-4.1.0&q=85"
+    },
+    {
+      "category": "Logistics / Warehouse",
+      "description": "Warehouse shelves for empty state graphics or fulfillment overview background.",
+      "url": "https://images.unsplash.com/photo-1587293852726-70cdb56c2866?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MTJ8MHwxfHNlYXJjaHwxfHxsb2dpc3RpY3MlMjBwYWNrYWdlJTIwd2FyZWhvdXNlfGVufDB8fHx8MTc4NjM1MDAxMXww&ixlib=rb-4.1.0&q=85"
+    }
+  ],
+  "instructions_to_main_agent": {
+    "priority": "Strict adherence to the provided UX/UI specifications. Treat the spec as the single source of truth.",
+    "customization": "Customize Shadcn UI components heavily to match the provided token values (colors, border-radius, spacing, typography). Do NOT use default Shadcn styling.",
+    "mock_data": "Implement realistic mock data for all unavailable backend/data sources (using the provided image URLs where applicable).",
+    "architecture": "Use a clean data layer that can be swapped out for real APIs later.",
+    "file_type": "Generate .js and .jsx files (not .tsx) as requested in the rules."
+  },
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": {
+    "1": "You tend to converge toward generic outputs. Avoid this by using the precise tight layout, tabular numeric variants, and exact neutral color palette to make it feel like a professional 'logistics control room' rather than a generic SaaS.",
+    "2": "Create depth through layered design elements with z-index hierarchy, but do NOT use glassmorphism for this operational app. Rely on crisp 1px borders and distinct solid neutral backgrounds (canvas vs default vs subtle).",
+    "3": "You MUST NOT apply universal transitions (e.g., transition: all). Add transitions for specific interactive elements.",
+    "4": "You MUST NOT center align the app container. This disrupts reading flow.",
+    "5": "Always use crisp, functional button styles (6px radius) relevant to the app style.",
+    "6": "NEVER use AI assistant Emoji characters (\ud83e\udd16\ud83e\udde0\ud83d\udcad\ud83d\udca1\ud83d\udd2e\ud83c\udfaf) for icons. Use lucide-react standard icons.",
+    "7": "Every interaction needs micro-animations - hover states, transitions. Ensure active states are clearly visible with high contrast.",
+    "8": "Use generous spacing where appropriate, but respect the 44px/52px row density limits for tabular data.",
+    "9": "Main agent relies on the provided image URLs. NEVER use placeholder services like via.placeholder.com.",
+    "10": "Prioritize using pre-existing components from src/components/ui when applicable, but strip any 'default SaaS' styles to match the custom tokens.",
+    "11": "Use sonner for toasts, locate it in /app/src/components/ui/sonner.jsx (adjusting for JS extension)."
+  }
+}
