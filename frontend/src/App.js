@@ -17,9 +17,11 @@ import Automations from "@/pages/Automations";
 import RunDetail from "@/pages/RunDetail";
 import Settings from "@/pages/Settings";
 import { Toaster } from "@/components/ui/sonner";
+import { LocaleProvider } from "@/lib/i18n";
 
 function App() {
   return (
+    <LocaleProvider>
     <BrowserRouter>
       <Routes>
         <Route element={<AppShell />}>
@@ -45,6 +47,7 @@ function App() {
       </Routes>
       <Toaster position="bottom-right" richColors />
     </BrowserRouter>
+    </LocaleProvider>
   );
 }
 

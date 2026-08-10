@@ -31,11 +31,21 @@ Build the complete full-stack E-RYDEZ Operations Console exactly as defined in t
 - Settings: users/roles matrix, integrations (masked credentials), business rules, message templates
 - Shell: collapsible sidebar, global search (/ shortcut) across orders/conversations/RMAs/inventory, Create menu, integration-health popover, notifications popover
 
+## Implemented (11.02.2026) — German/English internationalization
+- LocaleProvider + `useT()` hook at `/app/frontend/src/lib/i18n.jsx`; dictionary at `/app/frontend/src/lib/translations.js`
+- Default locale = **de** (per spec's internal language). Persisted in localStorage as `erydez.locale`
+- Segmented **DE | EN** toggle in top bar next to user avatar (`data-testid="language-switch"`, `lang-de`, `lang-en`)
+- Locale-aware formatting in `format.js`: dayjs de/en locales, CHF via `de-CH`/`en-CH`, business-day plural forms
+- Full coverage: navigation, top-bar chrome, KPI labels, section titles, table columns, filter chips, tab labels, empty states, alerts, button labels, dropdown items, dialog copy, toasts, StatusChip/Severity values, ConfidenceBadge, AutomationExplain
+
 ## Testing
 - Iteration 1 (10.08.2026): backend 37/37 pass; frontend ~95%, all pages functional. Fixed post-test: /settings default redirect, DialogTitle a11y. Regression suite: /app/backend/tests/test_erydez_backend.py.
+- 11.02.2026 smoke: DE default renders correctly (Übersicht, Bestellungen etc.); language toggle switches locale and re-renders all pages; lint passes.
 
 ## Backlog / next
 - P1: Email/weekly digest views (spec §4.1 daily digest report page), saved-view persistence in URL for column config
-- P2: Pickup booking flow with slot capacity (spec §8.4), goods receipt flow, WhatsApp channel constraints per channel
-- P2: Mobile-optimized focused task views (spec §12.3), German localization toggle
+- P1: Analytics drilldowns in Reports (historical comparison charts)
+- P1: External Pickup Booking module (calendar capacity + readiness checks)
+- P2: Role switcher in top bar (preview as Support/Fulfillment/Manager)
+- P2: Mobile-optimized focused task views (spec §12.3)
 - P3: Landed-cost/margin reports, demand forecasting, review/retention automations

@@ -4,6 +4,7 @@ import useSWR from "swr";
 import { api } from "@/lib/api";
 import { fmtDate, fmtCHF } from "@/lib/format";
 import { PageHeader, StatusChip, EmptyState } from "@/components/common";
+import { useT } from "@/lib/i18n";
 import { Skeleton } from "@/components/ui/skeleton";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
@@ -16,7 +17,10 @@ const FILTERS = [
   ["unread-message", "Unread customer message"], ["missing-tracking", "Missing tracking"], ["cancelled-refunded", "Cancelled / refunded"],
 ];
 
+const COLS = ["Order", "Customer", "Product / qty", "Paid", "Age", "Payment", "Fulfillment", "Stock", "Delivery", "Tracking", "Contact", "Next action", "Exceptions"];
+
 export default function Orders() {
+  const { t } = useT();
   const [params, setParams] = useSearchParams();
   const filter = params.get("filter") || "";
   const [q, setQ] = useState(params.get("q") || "");
@@ -25,12 +29,12 @@ export default function Orders() {
 
   return (
     <div data-testid="orders-page">
-      <PageHeader title="Orders" freshness="Shopify synced 2 min ago · Shopify remains the source of record for financial state"
+      <PageHeader title={t("Orders")} freshness={t("Shopify synced 2 min ago · Shopify remains the source of record for financial state")}
         actions={
           <div className="relative">
             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-inkmed" />
             <Input value={q} onChange={(e) => { setQ(e.target.value); setParams((p) => { const n = new URLSearchParams(p); e.target.value ? n.set("q", e.target.value) : n.delete("q"); return n; }, { replace: true }); }}
-              placeholder="Filter by order, customer, SKU…" className="h-9 w-64 pl-8" data-testid="orders-search-input" />
+              placeholder={t("Filter by order, customer, SKU…")} className="h-9 w-64 pl-8" data-testid="orders-search-input" />
           </div>
         }>
         <div className="mt-3 flex flex-wrap gap-1.5" data-testid="orders-filters">
@@ -39,7 +43,7 @@ export default function Orders() {
               onClick={() => setParams(key ? { filter: key } : {})}
               className={cn("rounded-full border px-3 py-1 text-xs font-medium transition-colors",
                 filter === key ? "border-brand bg-brand text-white" : "border-line bg-surface text-inkmed hover:border-brand/40 hover:text-ink")}>
-              {label}
+              {t(label)}
             </button>
           ))}
         </div>
@@ -49,15 +53,15 @@ export default function Orders() {
         {isLoading ? (
           <div className="space-y-2">{[...Array(8)].map((_, i) => <Skeleton key={i} className="h-12" />)}</div>
         ) : !orders?.length ? (
-          <EmptyState title="No orders match" description="No orders match the current filters — data is available and synced."
-            action={<button onClick={() => { setParams({}); setQ(""); }} className="text-xs font-medium text-brand hover:underline" data-testid="orders-clear-filters">Clear filters</button>} />
+          <EmptyState title={t("No orders match")} description={t("No orders match the current filters — data is available and synced.")}
+            action={<button onClick={() => { setParams({}); setQ(""); }} className="text-xs font-medium text-brand hover:underline" data-testid="orders-clear-filters">{t("Clear filters")}</button>} />
         ) : (
           <div className="overflow-x-auto rounded-lg border border-line bg-surface">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-line text-left text-xs font-semibold text-inkmed">
-                  {["Order", "Customer", "Product / qty", "Paid", "Age", "Payment", "Fulfillment", "Stock", "Delivery", "Tracking", "Contact", "Next action", "Exceptions"].map((h) => (
-                    <th key={h} className="whitespace-nowrap px-3 py-2.5">{h}</th>
+                  {COLS.map((h) => (
+                    <th key={h} className="whitespace-nowrap px-3 py-2.5">{t(h)}</th>
                   ))}
                 </tr>
               </thead>
@@ -79,7 +83,7 @@ export default function Orders() {
                       </td>
                       <td className="tnum whitespace-nowrap px-3 text-xs">{fmtDate(o.paid_at)}</td>
                       <td className="tnum whitespace-nowrap px-3 font-medium">
-                        <span className={cn(o.business_day_age > 14 && !cancelled && o.fulfillment_stage !== "Fulfilled" ? "text-danger" : "")}>{o.business_day_age} business days</span>
+                        <span className={cn(o.business_day_age > 14 && !cancelled && o.fulfillment_stage !== "Fulfilled" ? "text-danger" : "")}>{o.business_day_age} {t("business days")}</span>
                       </td>
                       <td className="px-3"><StatusChip value={o.payment_status} /></td>
                       <td className="px-3"><StatusChip value={o.fulfillment_stage} /></td>

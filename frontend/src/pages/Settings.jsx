@@ -4,6 +4,7 @@ import useSWR from "swr";
 import { api } from "@/lib/api";
 import { fmtRel } from "@/lib/format";
 import { PageHeader, StatusChip, SectionCard, InlineAlert } from "@/components/common";
+import { useT } from "@/lib/i18n";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -34,55 +35,56 @@ const TEMPLATES = [
 ];
 
 export default function Settings() {
+  const { t } = useT();
   const { section } = useParams();
   const { data: integrations } = useSWR("integrations", api.integrations);
 
   return (
     <div data-testid="settings-page">
-      <PageHeader title="Settings" freshness="Admin area · sensitive actions record actor, timestamp, previous state, new state, source and reason" />
+      <PageHeader title={t("Settings")} freshness={t("Admin area · sensitive actions record actor, timestamp, previous state, new state, source and reason")} />
       <div className="flex gap-6 p-6">
         <nav className="w-48 shrink-0 space-y-1" data-testid="settings-nav">
           {SECTIONS.map(([key, label]) => (
             <NavLink key={key} to={`/settings/${key}`} data-testid={`settings-nav-${key}`}
               className={({ isActive }) => cn("block rounded-md px-3 py-2 text-sm font-medium transition-colors", isActive ? "bg-brand/10 text-brand" : "text-inkmed hover:bg-subtle hover:text-ink")}>
-              {label}
+              {t(label)}
             </NavLink>
           ))}
         </nav>
         <div className="min-w-0 flex-1 space-y-4">
           {section === "users" && (
-            <SectionCard title="Users & roles" testId="settings-users">
+            <SectionCard title={t("Users & roles")} testId="settings-users">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead><tr className="border-b border-line text-left text-xs font-semibold text-inkmed">
-                    <th className="px-3 py-2">Role</th><th className="px-3 py-2">User</th><th className="px-3 py-2">Default permissions</th>
+                    <th className="px-3 py-2">{t("Role")}</th><th className="px-3 py-2">{t("User")}</th><th className="px-3 py-2">{t("Default permissions")}</th>
                   </tr></thead>
                   <tbody>
                     {ROLES.map((r) => (
                       <tr key={r.role} className="h-11 border-b border-line last:border-0">
-                        <td className="px-3 font-medium">{r.role}</td><td className="px-3">{r.user}</td><td className="px-3 text-xs text-inkmed">{r.perms}</td>
+                        <td className="px-3 font-medium">{t(r.role)}</td><td className="px-3">{r.user}</td><td className="px-3 text-xs text-inkmed">{r.perms}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-              <p className="mt-3 text-xs text-inkmed">Role-based access control with optional per-user overrides. Demo runs as Pablo (Owner).</p>
+              <p className="mt-3 text-xs text-inkmed">{t("Role-based access control with optional per-user overrides. Demo runs as Pablo (Owner).")}</p>
             </SectionCard>
           )}
           {section === "integrations" && (
-            <SectionCard title="Integrations" testId="settings-integrations">
-              <InlineAlert toneName="info">Credential values are never displayed after save. "Open in external system" actions always show the destination.</InlineAlert>
+            <SectionCard title={t("Integrations")} testId="settings-integrations">
+              <InlineAlert toneName="info">{t("Credential values are never displayed after save. \"Open in external system\" actions always show the destination.")}</InlineAlert>
               <div className="mt-3 space-y-2">
                 {integrations?.map((i) => (
                   <div key={i.name} className="flex items-center justify-between rounded-md border border-line p-3" data-testid={`settings-integration-${i.name.toLowerCase().replace(/\s+/g, "-")}`}>
                     <div>
                       <p className="text-sm font-medium">{i.name}</p>
-                      <p className="text-xs text-inkmed">{i.detail} · Last event {fmtRel(i.last_event)}</p>
+                      <p className="text-xs text-inkmed">{i.detail} · {t("Last event")} {fmtRel(i.last_event)}</p>
                       <p className="tnum text-xs text-inkmed">API key: ••••••••••••</p>
                     </div>
                     <div className="flex items-center gap-3">
                       <StatusChip value={i.status} />
-                      <button onClick={() => toast(`${i.name}: reconnection flow would open the provider consent screen`)} className="h-8 rounded-md border border-line px-2.5 text-xs font-medium hover:bg-subtle" data-testid="integration-reconnect-btn">Reconnect</button>
+                      <button onClick={() => toast(`${i.name}: reconnection flow would open the provider consent screen`)} className="h-8 rounded-md border border-line px-2.5 text-xs font-medium hover:bg-subtle" data-testid="integration-reconnect-btn">{t("Reconnect")}</button>
                     </div>
                   </div>
                 ))}
@@ -90,7 +92,7 @@ export default function Settings() {
             </SectionCard>
           )}
           {section === "rules" && (
-            <SectionCard title="Business rules" testId="settings-rules">
+            <SectionCard title={t("Business rules")} testId="settings-rules">
               <div className="space-y-3">
                 {RULES.map(([name, value]) => (
                   <div key={name} className="flex items-center justify-between gap-4 rounded-md border border-line p-3">
@@ -102,11 +104,11 @@ export default function Settings() {
             </SectionCard>
           )}
           {section === "templates" && (
-            <SectionCard title="Message templates" testId="settings-templates">
+            <SectionCard title={t("Message templates")} testId="settings-templates">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead><tr className="border-b border-line text-left text-xs font-semibold text-inkmed">
-                    <th className="px-3 py-2">Template</th><th className="px-3 py-2">Languages</th><th className="px-3 py-2">Purpose</th>
+                    <th className="px-3 py-2">{t("Template")}</th><th className="px-3 py-2">{t("Languages")}</th><th className="px-3 py-2">{t("Purpose")}</th>
                   </tr></thead>
                   <tbody>
                     {TEMPLATES.map(([id, langs, purpose]) => (
@@ -117,7 +119,7 @@ export default function Settings() {
                   </tbody>
                 </table>
               </div>
-              <p className="mt-3 text-xs text-inkmed">Templates render with verified order facts only. No default telephone number in signatures.</p>
+              <p className="mt-3 text-xs text-inkmed">{t("Templates render with verified order facts only. No default telephone number in signatures.")}</p>
             </SectionCard>
           )}
         </div>

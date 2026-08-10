@@ -4,12 +4,14 @@ import useSWR from "swr";
 import { api } from "@/lib/api";
 import { fmtRel, fmtTime, fmtDateTime } from "@/lib/format";
 import { PageHeader, KpiCard, StatusChip, SectionCard, Severity, EmptyState, InlineAlert, SourceBadge } from "@/components/common";
+import { useT } from "@/lib/i18n";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ArrowRight, Zap } from "lucide-react";
 
 const BUCKET_FILTERS = { "0–7": "unfulfilled", "8–14": "over-8", "15–21": "over-14", "22–30": "over-14", "30+": "over-30" };
 
 export default function Overview() {
+  const { t } = useT();
   const navigate = useNavigate();
   const { data, isLoading } = useSWR("overview", api.overview, { revalidateOnFocus: false });
 
@@ -30,23 +32,23 @@ export default function Overview() {
     <div data-testid="overview-page">
       {anyDisconnected && (
         <div className="bg-danger px-6 py-2 text-sm font-medium text-white" role="alert" data-testid="critical-system-banner">
-          A critical integration is disconnected. Affected counts may be incomplete.
+          {t("A critical integration is disconnected. Affected counts may be incomplete.")}
         </div>
       )}
-      <PageHeader title={`Good morning, ${data.greeting_name}`} freshness={`Last complete sync: ${fmtTime(data.last_sync)} · Shopify synced 2 min ago`} />
+      <PageHeader title={`${t("Good morning")}, ${data.greeting_name}`} freshness={`${t("Last complete sync")}: ${fmtTime(data.last_sync)} · ${t("Shopify synced 2 min ago")}`} />
       <div className="space-y-4 p-6">
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
-          <KpiCard label="Needs action" value={data.cards.needs_action} toneName="danger" testId="card-needs-action" sub="Open work items" onClick={() => navigate("/work?view=all-open")} />
-          <KpiCard label="Overdue > 14 business days" value={data.cards.overdue_14} toneName="warn" testId="card-overdue" sub="Unfulfilled paid orders" onClick={() => navigate("/orders?filter=over-14")} />
-          <KpiCard label="Awaiting reply" value={data.cards.awaiting_reply} toneName="info" testId="card-awaiting-reply" sub="Customers waiting" onClick={() => navigate("/inbox?filter=customer-waiting")} />
-          <KpiCard label="Failed automations" value={data.cards.failed_automations} toneName={data.cards.failed_automations > 0 ? "danger" : "ok"} testId="card-failed-automations" sub="Require intervention" onClick={() => navigate("/work?view=failed-automation")} />
+          <KpiCard label={t("Needs action")} value={data.cards.needs_action} toneName="danger" testId="card-needs-action" sub={t("Open work items")} onClick={() => navigate("/work?view=all-open")} />
+          <KpiCard label={t("Overdue > 14 business days")} value={data.cards.overdue_14} toneName="warn" testId="card-overdue" sub={t("Unfulfilled paid orders")} onClick={() => navigate("/orders?filter=over-14")} />
+          <KpiCard label={t("Awaiting reply")} value={data.cards.awaiting_reply} toneName="info" testId="card-awaiting-reply" sub={t("Customers waiting")} onClick={() => navigate("/inbox?filter=customer-waiting")} />
+          <KpiCard label={t("Failed automations")} value={data.cards.failed_automations} toneName={data.cards.failed_automations > 0 ? "danger" : "ok"} testId="card-failed-automations" sub={t("Require intervention")} onClick={() => navigate("/work?view=failed-automation")} />
         </div>
 
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <SectionCard title="Priority work queue" className="lg:col-span-2" testId="priority-queue-section"
-            action={<button onClick={() => navigate("/work")} className="flex items-center gap-1 text-xs font-medium text-brand hover:underline" data-testid="open-work-queue">Open work queue <ArrowRight size={12} /></button>}>
+          <SectionCard title={t("Priority work queue")} className="lg:col-span-2" testId="priority-queue-section"
+            action={<button onClick={() => navigate("/work")} className="flex items-center gap-1 text-xs font-medium text-brand hover:underline" data-testid="open-work-queue">{t("Open work queue")} <ArrowRight size={12} /></button>}>
             {data.priority_queue.length === 0 ? (
-              <EmptyState title="No open work" description="All exceptions are resolved. This is a genuine zero, not missing data." />
+              <EmptyState title={t("No open work")} description={t("All exceptions are resolved. This is a genuine zero, not missing data.")} />
             ) : (
               <div className="-m-4 divide-y divide-line">
                 {data.priority_queue.map((w) => (
@@ -66,9 +68,9 @@ export default function Overview() {
             )}
           </SectionCard>
 
-          <SectionCard title="Today" testId="today-panel">
+          <SectionCard title={t("Today")} testId="today-panel">
             {data.today.length === 0 ? (
-              <EmptyState title="Nothing scheduled today" />
+              <EmptyState title={t("Nothing scheduled today")} />
             ) : (
               <div className="space-y-2">
                 {data.today.map((a) => (
@@ -87,7 +89,7 @@ export default function Overview() {
             )}
           </SectionCard>
 
-          <SectionCard title="Order backlog by business-day age" className="lg:col-span-2" testId="backlog-chart">
+          <SectionCard title={t("Order backlog by business-day age")} className="lg:col-span-2" testId="backlog-chart">
             <div className="flex items-end gap-4 px-2" style={{ height: 160 }}>
               {Object.entries(data.backlog_by_age).map(([bucket, count]) => (
                 <button key={bucket} data-testid={`backlog-bucket-${bucket}`}
@@ -100,12 +102,12 @@ export default function Overview() {
                 </button>
               ))}
             </div>
-            <p className="mt-2 text-xs text-inkmed">Business days since payment. Click a segment to open the filtered order list.</p>
+            <p className="mt-2 text-xs text-inkmed">{t("Business days since payment. Click a segment to open the filtered order list.")}</p>
           </SectionCard>
 
-          <SectionCard title="Inventory risks" testId="inventory-risks">
+          <SectionCard title={t("Inventory risks")} testId="inventory-risks">
             {data.inventory_risks.length === 0 ? (
-              <EmptyState title="No shortages detected" />
+              <EmptyState title={t("No shortages detected")} />
             ) : (
               <div className="space-y-2">
                 {data.inventory_risks.slice(0, 5).map((i) => (
@@ -113,7 +115,7 @@ export default function Overview() {
                     className="flex w-full items-center justify-between gap-2 rounded-md border border-line p-2.5 text-left transition-colors hover:bg-subtle">
                     <div className="min-w-0">
                       <p className="truncate text-sm font-medium">{i.product}</p>
-                      <p className="tnum text-xs text-inkmed">ATP {i.atp} · Inbound {i.inbound_qty || 0}</p>
+                      <p className="tnum text-xs text-inkmed">{t("ATP")} {i.atp} · {t("Inbound")} {i.inbound_qty || 0}</p>
                     </div>
                     <StatusChip value={i.risk} />
                   </button>
@@ -122,8 +124,8 @@ export default function Overview() {
             )}
           </SectionCard>
 
-          <SectionCard title="Recent automation activity" className="lg:col-span-2" testId="automation-activity"
-            action={<button onClick={() => navigate("/automations?tab=approvals")} className="text-xs font-medium text-brand hover:underline" data-testid="pending-approvals-link">{data.automation_activity.pending_approvals} pending approvals</button>}>
+          <SectionCard title={t("Recent automation activity")} className="lg:col-span-2" testId="automation-activity"
+            action={<button onClick={() => navigate("/automations?tab=approvals")} className="text-xs font-medium text-brand hover:underline" data-testid="pending-approvals-link">{data.automation_activity.pending_approvals} {t("pending approvals")}</button>}>
             <div className="-m-4 divide-y divide-line">
               {data.automation_activity.recent_runs.map((r) => (
                 <button key={r.id} onClick={() => navigate(`/automations/runs/${r.id}`)} data-testid="automation-run-row"

@@ -2,8 +2,9 @@ import React, { useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import useSWR from "swr";
 import { api } from "@/lib/api";
-import { fmtRel, fmtDateTime, fmtDate } from "@/lib/format";
-import { PageHeader, StatusChip, EmptyState, InlineAlert, FactList } from "@/components/common";
+import { fmtRel, fmtDateTime } from "@/lib/format";
+import { PageHeader, StatusChip, EmptyState } from "@/components/common";
+import { useT } from "@/lib/i18n";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,6 +15,7 @@ import { Pause, Play, Check, X, Pencil, MessageCircleQuestion, Zap } from "lucid
 const RISK_TONE = { Low: "ok", Medium: "info", High: "warn", Critical: "danger" };
 
 function ApprovalCard({ a, onDecided }) {
+  const { t } = useT();
   const [rejectOpen, setRejectOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [reason, setReason] = useState("");
@@ -25,7 +27,7 @@ function ApprovalCard({ a, onDecided }) {
     try {
       await api.decideApproval(a.id, { decision, ...extra });
       onDecided();
-      toast.success(decision === "approve" ? "Approved" : decision === "reject" ? "Rejected" : "More information requested");
+      toast.success(decision === "approve" ? t("Approved") : decision === "reject" ? t("Rejected") : t("More information requested"));
     } catch (e) {
       toast.error(e.response?.data?.detail || "Decision failed");
     }
@@ -36,16 +38,16 @@ function ApprovalCard({ a, onDecided }) {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <span className="tnum text-xs font-semibold text-inkmed">{a.id}</span>
-          <StatusChip value={`${a.risk} risk`} toneOverride={RISK_TONE[a.risk]} />
+          <StatusChip value={`${t(a.risk)} ${t("risk")}`} toneOverride={RISK_TONE[a.risk]} />
           <StatusChip value={a.state} />
         </div>
-        <span className="tnum text-xs text-inkmed">Requested {fmtRel(a.requested_at)} by {a.requested_by}</span>
+        <span className="tnum text-xs text-inkmed">{t("Requested")} {fmtRel(a.requested_at)} {t("by")} {a.requested_by}</span>
       </div>
       <p className="mt-2 text-sm font-semibold text-ink" data-testid="approval-proposed-action">{a.proposed_action}</p>
       <p className="text-xs text-inkmed">{a.affected}</p>
       <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
         <div className="rounded-md border border-line bg-subtle p-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-inkmed">Reason & supporting facts</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-inkmed">{t("Reason & supporting facts")}</p>
           <p className="mt-1 text-sm">{a.reason}</p>
           <ul className="mt-2 list-disc space-y-0.5 pl-4 text-xs text-inkmed">
             {a.facts.map((f) => <li key={f}>{f}</li>)}
@@ -53,12 +55,12 @@ function ApprovalCard({ a, onDecided }) {
         </div>
         <div className="space-y-2">
           <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-warn">Financial / customer impact</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-warn">{t("Financial / customer impact")}</p>
             <p className="mt-1 text-sm">{a.impact}</p>
           </div>
           {a.draft && (
             <div className="rounded-md border border-line p-3">
-              <p className="text-xs font-semibold uppercase tracking-wide text-inkmed">Draft message</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-inkmed">{t("Draft message")}</p>
               <p className="mt-1 text-sm italic text-ink">"{a.draft}"</p>
             </div>
           )}
@@ -67,33 +69,33 @@ function ApprovalCard({ a, onDecided }) {
       {a.decision && <p className="mt-2 text-xs font-medium text-inkmed" data-testid="approval-decision">{a.decision}{a.decision_reason ? ` — ${a.decision_reason}` : ""}</p>}
       {pending && (
         <div className="mt-3 flex flex-wrap gap-2">
-          <button onClick={() => decide("approve")} className="flex h-9 items-center gap-1.5 rounded-md bg-ok px-3 text-sm font-medium text-white transition-colors hover:opacity-90" data-testid="approval-approve-btn"><Check size={14} /> Approve</button>
-          {a.draft && <button onClick={() => setEditOpen(true)} className="flex h-9 items-center gap-1.5 rounded-md border border-line px-3 text-sm font-medium hover:bg-subtle" data-testid="approval-edit-approve-btn"><Pencil size={14} /> Edit & approve</button>}
-          <button onClick={() => setRejectOpen(true)} className="flex h-9 items-center gap-1.5 rounded-md border border-red-200 px-3 text-sm font-medium text-danger hover:bg-red-50" data-testid="approval-reject-btn"><X size={14} /> Reject</button>
-          <button onClick={() => decide("more-info")} className="flex h-9 items-center gap-1.5 rounded-md border border-line px-3 text-sm font-medium hover:bg-subtle" data-testid="approval-more-info-btn"><MessageCircleQuestion size={14} /> Request more information</button>
-          {a.order_id && <button onClick={() => navigate(`/orders/${a.order_id}`)} className="ml-auto h-9 rounded-md px-3 text-sm font-medium text-brand hover:underline" data-testid="approval-open-order">Open {a.order_id}</button>}
+          <button onClick={() => decide("approve")} className="flex h-9 items-center gap-1.5 rounded-md bg-ok px-3 text-sm font-medium text-white transition-colors hover:opacity-90" data-testid="approval-approve-btn"><Check size={14} /> {t("Approve")}</button>
+          {a.draft && <button onClick={() => setEditOpen(true)} className="flex h-9 items-center gap-1.5 rounded-md border border-line px-3 text-sm font-medium hover:bg-subtle" data-testid="approval-edit-approve-btn"><Pencil size={14} /> {t("Edit & approve")}</button>}
+          <button onClick={() => setRejectOpen(true)} className="flex h-9 items-center gap-1.5 rounded-md border border-red-200 px-3 text-sm font-medium text-danger hover:bg-red-50" data-testid="approval-reject-btn"><X size={14} /> {t("Reject")}</button>
+          <button onClick={() => decide("more-info")} className="flex h-9 items-center gap-1.5 rounded-md border border-line px-3 text-sm font-medium hover:bg-subtle" data-testid="approval-more-info-btn"><MessageCircleQuestion size={14} /> {t("Request more information")}</button>
+          {a.order_id && <button onClick={() => navigate(`/orders/${a.order_id}`)} className="ml-auto h-9 rounded-md px-3 text-sm font-medium text-brand hover:underline" data-testid="approval-open-order">{t("Open")} {a.order_id}</button>}
         </div>
       )}
 
       <Dialog open={rejectOpen} onOpenChange={setRejectOpen}>
         <DialogContent data-testid="reject-dialog">
-          <DialogHeader><DialogTitle>Reject {a.id}</DialogTitle></DialogHeader>
-          <p className="text-sm text-inkmed">A rejection reason is required and will be recorded in the audit log.</p>
-          <Textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Rejection reason (required)" data-testid="reject-reason-input" />
+          <DialogHeader><DialogTitle>{t("Reject")} {a.id}</DialogTitle></DialogHeader>
+          <p className="text-sm text-inkmed">{t("A rejection reason is required and will be recorded in the audit log.")}</p>
+          <Textarea value={reason} onChange={(e) => setReason(e.target.value)} placeholder={t("Rejection reason (required)")} data-testid="reject-reason-input" />
           <DialogFooter>
-            <button onClick={() => setRejectOpen(false)} className="h-9 rounded-md border border-line px-3 text-sm font-medium hover:bg-subtle">Cancel</button>
-            <button onClick={() => { decide("reject", { reason }); setRejectOpen(false); }} disabled={!reason.trim()} className="h-9 rounded-md bg-danger px-3 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50" data-testid="confirm-reject-btn">Reject</button>
+            <button onClick={() => setRejectOpen(false)} className="h-9 rounded-md border border-line px-3 text-sm font-medium hover:bg-subtle">{t("Cancel")}</button>
+            <button onClick={() => { decide("reject", { reason }); setRejectOpen(false); }} disabled={!reason.trim()} className="h-9 rounded-md bg-danger px-3 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50" data-testid="confirm-reject-btn">{t("Reject")}</button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent data-testid="edit-approve-dialog">
-          <DialogHeader><DialogTitle>Edit draft & approve {a.id}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{t("Edit draft & approve")} {a.id}</DialogTitle></DialogHeader>
           <Textarea value={draft} onChange={(e) => setDraft(e.target.value)} className="min-h-28" data-testid="edit-draft-input" />
           <DialogFooter>
-            <button onClick={() => setEditOpen(false)} className="h-9 rounded-md border border-line px-3 text-sm font-medium hover:bg-subtle">Cancel</button>
-            <button onClick={() => { decide("approve", { draft }); setEditOpen(false); }} className="h-9 rounded-md bg-ok px-3 text-sm font-medium text-white hover:opacity-90" data-testid="confirm-edit-approve-btn">Approve with edits</button>
+            <button onClick={() => setEditOpen(false)} className="h-9 rounded-md border border-line px-3 text-sm font-medium hover:bg-subtle">{t("Cancel")}</button>
+            <button onClick={() => { decide("approve", { draft }); setEditOpen(false); }} className="h-9 rounded-md bg-ok px-3 text-sm font-medium text-white hover:opacity-90" data-testid="confirm-edit-approve-btn">{t("Approve with edits")}</button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -101,7 +103,10 @@ function ApprovalCard({ a, onDecided }) {
   );
 }
 
+const RULE_COLS = ["Rule", "Status", "Trigger", "Next run", "Last result", "Success / failure", "Approval policy", "Owner"];
+
 export default function Automations() {
+  const { t } = useT();
   const [params, setParams] = useSearchParams();
   const tab = params.get("tab") || "rules";
   const navigate = useNavigate();
@@ -113,16 +118,16 @@ export default function Automations() {
     const next = a.status === "Paused" ? "Active" : "Paused";
     await api.updateAutomation(a.id, { status: next });
     mutAutos();
-    toast.success(`${a.name} ${next.toLowerCase()}`);
+    toast.success(`${a.name}: ${t(next)}`);
   };
 
   const pendingCount = approvals?.filter((a) => a.state === "Pending").length || 0;
 
   return (
     <div data-testid="automations-page">
-      <PageHeader title="Automations & approvals" freshness="Every automated decision is explainable from stored inputs, rule version and result">
+      <PageHeader title={t("Automations & approvals")} freshness={t("Every automated decision is explainable from stored inputs, rule version and result")}>
         <div className="mt-3 flex gap-1.5">
-          {[["rules", "Rules"], ["runs", "Run history"], ["approvals", `Approval center${pendingCount ? ` (${pendingCount})` : ""}`]].map(([key, label]) => (
+          {[["rules", t("Rules")], ["runs", t("Run history")], ["approvals", `${t("Approval center")}${pendingCount ? ` (${pendingCount})` : ""}`]].map(([key, label]) => (
             <button key={key} onClick={() => setParams({ tab: key })} data-testid={`automations-tab-${key}`}
               className={cn("rounded-full border px-3 py-1 text-xs font-medium transition-colors", tab === key ? "border-brand bg-brand text-white" : "border-line bg-surface text-inkmed hover:text-ink")}>
               {label}
@@ -136,7 +141,8 @@ export default function Automations() {
             <div className="overflow-x-auto rounded-lg border border-line bg-surface">
               <table className="w-full text-sm">
                 <thead><tr className="border-b border-line text-left text-xs font-semibold text-inkmed">
-                  {["Rule", "Status", "Trigger", "Next run", "Last result", "Success / failure", "Approval policy", "Owner", ""].map((h) => <th key={h} className="whitespace-nowrap px-3 py-2.5">{h}</th>)}
+                  {RULE_COLS.map((h) => <th key={h} className="whitespace-nowrap px-3 py-2.5">{t(h)}</th>)}
+                  <th></th>
                 </tr></thead>
                 <tbody>
                   {autos.map((a) => (
@@ -151,7 +157,7 @@ export default function Automations() {
                       <td className="px-3 text-xs">{a.owner}</td>
                       <td className="px-3">
                         <button onClick={() => toggle(a)} className="flex h-8 items-center gap-1 rounded-md border border-line px-2 text-xs font-medium hover:bg-subtle" data-testid="automation-toggle-btn">
-                          {a.status === "Paused" ? <><Play size={12} /> Resume</> : <><Pause size={12} /> Pause</>}
+                          {a.status === "Paused" ? <><Play size={12} /> {t("Resume")}</> : <><Pause size={12} /> {t("Pause")}</>}
                         </button>
                       </td>
                     </tr>
@@ -185,12 +191,12 @@ export default function Automations() {
           !approvals ? <Skeleton className="h-64" /> : (
             <div className="space-y-4">
               <div className="grid grid-cols-1 gap-2 rounded-lg border border-line bg-surface p-4 text-xs text-inkmed md:grid-cols-4" data-testid="risk-level-legend">
-                <div><StatusChip value="Low risk" toneOverride="ok" /><p className="mt-1">Routine status update with verified facts — automatic after policy enabled</p></div>
-                <div><StatusChip value="Medium risk" toneOverride="info" /><p className="mt-1">Non-standard message, inventory override — single approval</p></div>
-                <div><StatusChip value="High risk" toneOverride="warn" /><p className="mt-1">Refund, cancellation fee, warranty decision — owner approval</p></div>
-                <div><StatusChip value="Critical risk" toneOverride="danger" /><p className="mt-1">Supplier deposit, destructive bulk correction — explicit confirmation + second approval</p></div>
+                <div><StatusChip value={t("Low risk")} toneOverride="ok" /><p className="mt-1">{t("Routine status update with verified facts — automatic after policy enabled")}</p></div>
+                <div><StatusChip value={t("Medium risk")} toneOverride="info" /><p className="mt-1">{t("Non-standard message, inventory override — single approval")}</p></div>
+                <div><StatusChip value={t("High risk")} toneOverride="warn" /><p className="mt-1">{t("Refund, cancellation fee, warranty decision — owner approval")}</p></div>
+                <div><StatusChip value={t("Critical risk")} toneOverride="danger" /><p className="mt-1">{t("Supplier deposit, destructive bulk correction — explicit confirmation + second approval")}</p></div>
               </div>
-              {approvals.length === 0 ? <EmptyState title="No approvals" /> : approvals.map((a) => (
+              {approvals.length === 0 ? <EmptyState title={t("No approvals")} /> : approvals.map((a) => (
                 <ApprovalCard key={a.id} a={a} onDecided={mutApprovals} />
               ))}
             </div>

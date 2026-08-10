@@ -1,5 +1,6 @@
 import React from "react";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import {
   AlertTriangle, AlertOctagon, CheckCircle2, Info, CircleDashed, Mail, MessageSquare,
   Phone, Store, Truck, Calendar, Zap, StickyNote, ShieldCheck, Undo2, PackageCheck,
@@ -36,26 +37,28 @@ const TONE_ICONS = {
 };
 
 export const StatusChip = ({ value, toneOverride, icon, className, testId }) => {
-  const t = toneOverride || tone(value);
-  const Icon = icon || TONE_ICONS[t];
+  const { t } = useT();
+  const tn = toneOverride || tone(value);
+  const Icon = icon || TONE_ICONS[tn];
   return (
     <span
       data-testid={testId || `status-chip-${String(value).toLowerCase().replace(/[^a-z0-9]+/g, "-")}`}
-      className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium leading-[18px] whitespace-nowrap", TONE_STYLES[t], className)}
+      className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium leading-[18px] whitespace-nowrap", TONE_STYLES[tn], className)}
     >
       <Icon size={12} strokeWidth={2} />
-      {value}
+      {t(String(value))}
     </span>
   );
 };
 
 export const Severity = ({ value }) => {
-  const t = tone(value);
-  const Icon = TONE_ICONS[t];
-  const color = { danger: "text-danger", warn: "text-warn", ok: "text-ok", info: "text-info", neut: "text-neut" }[t];
+  const { t } = useT();
+  const tn = tone(value);
+  const Icon = TONE_ICONS[tn];
+  const color = { danger: "text-danger", warn: "text-warn", ok: "text-ok", info: "text-info", neut: "text-neut" }[tn];
   return (
     <span className={cn("inline-flex items-center gap-1.5 text-sm font-medium", color)} data-testid={`severity-${String(value).toLowerCase()}`}>
-      <Icon size={14} strokeWidth={2} /> {value}
+      <Icon size={14} strokeWidth={2} /> {t(String(value))}
     </span>
   );
 };
@@ -76,6 +79,7 @@ export const SourceBadge = ({ channel, label }) => {
 };
 
 export const KpiCard = ({ label, value, toneName = "neut", onClick, testId, sub, failed }) => {
+  const { t } = useT();
   const valColor = { danger: "text-danger", warn: "text-warn", ok: "text-ok", info: "text-info", neut: "text-ink" }[toneName];
   return (
     <button
@@ -85,7 +89,7 @@ export const KpiCard = ({ label, value, toneName = "neut", onClick, testId, sub,
     >
       <span className="text-xs font-medium uppercase tracking-wide text-inkmed">{label}</span>
       {failed ? (
-        <span className="text-sm font-semibold text-danger">Data unavailable</span>
+        <span className="text-sm font-semibold text-danger">{t("Data unavailable")}</span>
       ) : (
         <span className={cn("tnum text-2xl font-semibold leading-8", valColor)}>{value}</span>
       )}
@@ -143,11 +147,13 @@ export const FactList = ({ facts }) => (
   </dl>
 );
 
-export const ConfidenceBadge = ({ value, label = "Match confidence" }) => {
-  const t = value >= 90 ? "ok" : value >= 70 ? "warn" : "danger";
+export const ConfidenceBadge = ({ value, label }) => {
+  const { t } = useT();
+  const tn = value >= 90 ? "ok" : value >= 70 ? "warn" : "danger";
+  const finalLabel = label || t("Match confidence");
   return (
-    <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium", TONE_STYLES[t])} data-testid="confidence-badge">
-      {label}: {value}%
+    <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium", TONE_STYLES[tn])} data-testid="confidence-badge">
+      {finalLabel}: {value}%
     </span>
   );
 };
@@ -176,16 +182,19 @@ export const TimelineEvent = ({ event, expanded, onToggle }) => (
   </div>
 );
 
-export const AutomationExplain = ({ trigger, facts, decision, actions }) => (
-  <div className="space-y-3 text-sm" data-testid="automation-explain-block">
-    {[["Trigger", trigger], ["Facts", facts], ["Decision", decision], ["Action", actions]].map(([label, content]) => (
-      <div key={label} className="flex gap-3">
-        <span className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-inkmed">{label}</span>
-        <div className="min-w-0 flex-1 text-ink">{content}</div>
-      </div>
-    ))}
-  </div>
-);
+export const AutomationExplain = ({ trigger, facts, decision, actions }) => {
+  const { t } = useT();
+  return (
+    <div className="space-y-3 text-sm" data-testid="automation-explain-block">
+      {[[t("Trigger"), trigger], [t("Facts"), facts], [t("Decision"), decision], [t("Action"), actions]].map(([label, content]) => (
+        <div key={label} className="flex gap-3">
+          <span className="w-16 shrink-0 text-xs font-semibold uppercase tracking-wide text-inkmed">{label}</span>
+          <div className="min-w-0 flex-1 text-ink">{content}</div>
+        </div>
+      ))}
+    </div>
+  );
+};
 
 export const InlineAlert = ({ toneName = "warn", title, children, testId }) => {
   const Icon = TONE_ICONS[toneName];

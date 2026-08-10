@@ -4,6 +4,7 @@ import useSWR from "swr";
 import { api } from "@/lib/api";
 import { fmtRel, fmtDateTime, isOverdue } from "@/lib/format";
 import { PageHeader, Severity, StatusChip, SourceBadge, EmptyState, FactList, InlineAlert } from "@/components/common";
+import { useT } from "@/lib/i18n";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -20,6 +21,7 @@ const VIEWS = [
 ];
 
 export default function WorkQueue() {
+  const { t } = useT();
   const [params, setParams] = useSearchParams();
   const view = params.get("view") || "all-open";
   const navigate = useNavigate();
@@ -34,15 +36,15 @@ export default function WorkQueue() {
   const assign = async (id, owner) => {
     await api.updateWorkItem(id, { owner });
     mutate();
-    toast.success(`Assigned to ${owner}`);
+    toast.success(`${t("Assign to me")}: ${owner}`);
   };
 
   const resolve = async (item) => {
     await api.updateWorkItem(item.id, { state: "Resolved" });
     setSelectedId(null);
     mutate();
-    toast.success("Work item resolved", {
-      action: { label: "Undo", onClick: async () => { await api.updateWorkItem(item.id, { state: "Open" }); mutate(); } },
+    toast.success(t("Work item resolved"), {
+      action: { label: t("Undo"), onClick: async () => { await api.updateWorkItem(item.id, { state: "Open" }); mutate(); } },
     });
   };
 
@@ -69,14 +71,14 @@ export default function WorkQueue() {
 
   return (
     <div data-testid="work-queue-page">
-      <PageHeader title="Work queue" freshness="Counts reconcile with source data · Keyboard: J/K move · E assign to me · R resolve · Enter open">
+      <PageHeader title={t("Work queue")} freshness={t("Counts reconcile with source data · Keyboard: J/K move · E assign to me · R resolve · Enter open")}>
         <div className="mt-3 flex flex-wrap gap-1.5" data-testid="saved-views">
           {VIEWS.map(([key, label]) => (
             <button key={key} data-testid={`view-${key}`}
               onClick={() => setParams({ view: key })}
               className={cn("rounded-full border px-3 py-1 text-xs font-medium transition-colors",
                 view === key ? "border-brand bg-brand text-white" : "border-line bg-surface text-inkmed hover:border-brand/40 hover:text-ink")}>
-              {label} <span className="tnum ml-0.5 opacity-70">{data?.counts?.[key] ?? ""}</span>
+              {t(label)} <span className="tnum ml-0.5 opacity-70">{data?.counts?.[key] ?? ""}</span>
             </button>
           ))}
         </div>
@@ -85,35 +87,35 @@ export default function WorkQueue() {
       <div className="p-6">
         {checked.length > 0 && (
           <div className="mb-3 flex items-center gap-2 rounded-md border border-brand/30 bg-blue-50 px-3 py-2 text-sm" data-testid="bulk-actions-bar">
-            <span className="tnum font-medium text-info">{checked.length} selected</span>
+            <span className="tnum font-medium text-info">{checked.length} {t("selected")}</span>
             <button className="rounded-md border border-line bg-surface px-2.5 py-1 text-xs font-medium hover:bg-subtle" data-testid="bulk-assign"
-              onClick={() => bulk((id) => api.updateWorkItem(id, { owner: "Pablo" }), "Assigned to Pablo")}>Assign to me</button>
+              onClick={() => bulk((id) => api.updateWorkItem(id, { owner: "Pablo" }), `${t("Assign to me")}: Pablo`)}>{t("Assign to me")}</button>
             <button className="rounded-md border border-line bg-surface px-2.5 py-1 text-xs font-medium hover:bg-subtle" data-testid="bulk-priority"
-              onClick={() => bulk((id) => api.updateWorkItem(id, { severity: "High" }), "Priority set to High")}>Set priority High</button>
-            <span className="ml-auto text-xs text-inkmed">Financial and customer-facing actions are never bulk actions.</span>
+              onClick={() => bulk((id) => api.updateWorkItem(id, { severity: "High" }), t("Set priority High"))}>{t("Set priority High")}</button>
+            <span className="ml-auto text-xs text-inkmed">{t("Financial and customer-facing actions are never bulk actions.")}</span>
           </div>
         )}
 
         {isLoading ? (
           <div className="space-y-2">{[...Array(6)].map((_, i) => <Skeleton key={i} className="h-12" />)}</div>
         ) : items.length === 0 ? (
-          <EmptyState title="No items in this view" description="This view has no matching open work — a genuine empty result, not a data failure."
-            action={<button onClick={() => setParams({ view: "all-open" })} className="text-xs font-medium text-brand hover:underline" data-testid="clear-filters">Show all open</button>} />
+          <EmptyState title={t("No items in this view")} description={t("This view has no matching open work — a genuine empty result, not a data failure.")}
+            action={<button onClick={() => setParams({ view: "all-open" })} className="text-xs font-medium text-brand hover:underline" data-testid="clear-filters">{t("Show all open")}</button>} />
         ) : (
           <div className="overflow-x-auto rounded-lg border border-line bg-surface">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-line text-left text-xs font-semibold text-inkmed">
                   <th className="w-10 px-3 py-2.5"></th>
-                  <th className="px-3 py-2.5">Severity</th>
-                  <th className="px-3 py-2.5">Item</th>
-                  <th className="px-3 py-2.5">Reason</th>
-                  <th className="px-3 py-2.5">State</th>
-                  <th className="px-3 py-2.5">Customer waiting</th>
-                  <th className="px-3 py-2.5">Due</th>
-                  <th className="px-3 py-2.5">Owner</th>
-                  <th className="px-3 py-2.5">Recommended action</th>
-                  <th className="px-3 py-2.5">Updated</th>
+                  <th className="px-3 py-2.5">{t("Severity")}</th>
+                  <th className="px-3 py-2.5">{t("Item")}</th>
+                  <th className="px-3 py-2.5">{t("Reason")}</th>
+                  <th className="px-3 py-2.5">{t("State")}</th>
+                  <th className="px-3 py-2.5">{t("Customer waiting")}</th>
+                  <th className="px-3 py-2.5">{t("Due")}</th>
+                  <th className="px-3 py-2.5">{t("Owner")}</th>
+                  <th className="px-3 py-2.5">{t("Recommended action")}</th>
+                  <th className="px-3 py-2.5">{t("Updated")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -142,7 +144,7 @@ export default function WorkQueue() {
                         </DropdownMenuTrigger>
                         <DropdownMenuContent>
                           {["Pablo", "Support", "Fulfillment", "Unassigned"].map((o) => (
-                            <DropdownMenuItem key={o} onClick={() => assign(w.id, o)}>{o}</DropdownMenuItem>
+                            <DropdownMenuItem key={o} onClick={() => assign(w.id, o)}>{t(o)}</DropdownMenuItem>
                           ))}
                         </DropdownMenuContent>
                       </DropdownMenu>
@@ -169,47 +171,47 @@ export default function WorkQueue() {
               </SheetHeader>
               <div className="mt-4 space-y-4">
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-inkmed">Why this item exists</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-inkmed">{t("Why this item exists")}</p>
                   <p className="mt-1 text-sm text-ink">{selected.reason}</p>
                 </div>
                 <div className="rounded-md border border-line bg-subtle p-3">
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-inkmed">Facts</p>
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-inkmed">{t("Facts")}</p>
                   <FactList facts={[
-                    ["Order", selected.order_id || "—"],
-                    ["Customer", selected.customer || "—"],
-                    ["Customer waiting", selected.customer_waiting || "Not waiting"],
-                    ["Due", selected.due ? fmtDateTime(selected.due) : "No deadline"],
-                    ["Owner", selected.owner],
-                    ["Source", selected.source],
+                    [t("Order"), selected.order_id || "—"],
+                    [t("Customer"), selected.customer || "—"],
+                    [t("Customer waiting"), selected.customer_waiting || t("Not waiting")],
+                    [t("Due"), selected.due ? fmtDateTime(selected.due) : t("No deadline")],
+                    [t("Owner"), selected.owner],
+                    [t("Source"), selected.source],
                   ]} />
                 </div>
                 <div className="rounded-md border border-blue-200 bg-blue-50 p-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-info">System recommendation</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-info">{t("System recommendation")}</p>
                   <p className="mt-1 text-sm font-medium text-ink">{selected.recommended_action}</p>
-                  <p className="mt-0.5 text-xs text-inkmed">Recommendation based on rule evaluation — facts shown above.</p>
+                  <p className="mt-0.5 text-xs text-inkmed">{t("Recommendation based on rule evaluation — facts shown above.")}</p>
                 </div>
                 {selected.category === "conversation" && (
-                  <InlineAlert toneName="warn" testId="duplicate-alert">A reply may already exist on another channel. Review the timeline before responding.</InlineAlert>
+                  <InlineAlert toneName="warn" testId="duplicate-alert">{t("A reply may already exist on another channel. Review the timeline before responding.")}</InlineAlert>
                 )}
                 <div className="flex flex-col gap-2">
                   {selected.order_id && (
                     <button onClick={() => navigate(`/orders/${selected.order_id}`)} data-testid="drawer-open-order"
                       className="flex h-10 items-center justify-center gap-2 rounded-md bg-brand text-sm font-medium text-white transition-colors hover:bg-brand/90">
-                      <ExternalLink size={14} /> Open order {selected.order_id}
+                      <ExternalLink size={14} /> {t("Open order")} {selected.order_id}
                     </button>
                   )}
                   <div className="grid grid-cols-2 gap-2">
                     <button onClick={() => assign(selected.id, "Pablo")} data-testid="drawer-assign-me"
                       className="flex h-9 items-center justify-center gap-1.5 rounded-md border border-line bg-surface text-sm font-medium transition-colors hover:bg-subtle">
-                      <UserPlus size={14} /> Assign to me
+                      <UserPlus size={14} /> {t("Assign to me")}
                     </button>
                     <button onClick={() => resolve(selected)} data-testid="drawer-resolve"
                       className="flex h-9 items-center justify-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 text-sm font-medium text-ok transition-colors hover:bg-emerald-100">
-                      <CheckCheck size={14} /> Resolve
+                      <CheckCheck size={14} /> {t("Resolve")}
                     </button>
                   </div>
                 </div>
-                <p className="text-xs text-inkmed">Updated {fmtRel(selected.updated_at)} · Created {fmtRel(selected.created_at)}</p>
+                <p className="text-xs text-inkmed">{t("Updated")} {fmtRel(selected.updated_at)} · {t("Created")} {fmtRel(selected.created_at)}</p>
               </div>
             </>
           )}
