@@ -2,8 +2,94 @@
 
 ## Purpose
 
-This directory contains repeatable local-development and validation procedures. No production
-deployment or incident-response process is currently documented in the repository.
+This directory contains the trusted-LAN Docker deployment and repeatable local-development and
+validation procedures. The application is a mock-backed prototype, not a public or authenticated
+production service.
+
+## Docker Compose Deployment
+
+### Security Boundary
+
+The stack serves unauthenticated plain HTTP on all LAN interfaces. Run it only on a trusted LAN or
+VPN. Do not port-forward it, publish it through a public proxy, or expose Docker ports for MongoDB or
+the backend. `POST /api/reset` is unauthenticated and deletes and recreates the mock operational
+collections; never use it with data that must be retained.
+
+### Prerequisites
+
+- Docker Engine with the Compose plugin.
+- Host firewall or VPN rules limiting TCP port `8082` to trusted clients.
+- Sufficient Docker storage for images, logs, and the MongoDB volume.
+
+### Configure and Start
+
+Create the untracked Compose environment and generate a URL-safe database password:
+
+```bash
+cp .env.example .env
+openssl rand -hex 32
+```
+
+Set the generated value as `MONGO_ROOT_PASSWORD` in `.env`. Validate, build, and start the stack:
+
+```bash
+docker compose config --quiet
+docker compose build
+docker compose up -d
+docker compose ps
+curl -fsS http://127.0.0.1:8082/api/health/ready
+```
+
+All three services must report healthy. Open `http://<server-address>:8082`; use the configured
+`ERYDEZ_PORT` instead if changed. Only the frontend port should appear under published ports.
+
+### Operate and Update
+
+Inspect status and recent logs:
+
+```bash
+docker compose ps
+docker compose logs --tail=200 frontend backend mongodb
+```
+
+Rebuild and restart after an application update:
+
+```bash
+docker compose build --pull
+docker compose up -d
+```
+
+Stop or remove containers without deleting MongoDB data:
+
+```bash
+docker compose stop
+docker compose down
+```
+
+Data is stored in the `erydez-operations_mongodb-data` named volume and survives container
+replacement and `docker compose down`. Never pass `--volumes` unless permanent deletion of all
+Compose-managed application data is intended.
+
+### Backup and Restore
+
+This prototype has no automated backup schedule. For an operator-triggered logical backup, ensure no
+mutations are in progress and run `mongodump` inside the authenticated MongoDB service, writing the
+archive to an explicitly chosen host backup directory. Test the corresponding `mongorestore`
+procedure against a separate disposable Compose project before relying on a backup. Do not treat a
+Docker volume as a backup, and do not commit database archives or credentials.
+
+### Deployment Validation
+
+```bash
+curl -fsS http://127.0.0.1:8082/healthz
+curl -fsS http://127.0.0.1:8082/api/health/live
+curl -fsS http://127.0.0.1:8082/api/health/ready
+curl -fsS http://127.0.0.1:8082/orders
+```
+
+The deep `/orders` route must return the React application. MongoDB and FastAPI must have no
+published host ports. If MongoDB stops, liveness remains available while readiness returns HTTP 503;
+readiness must recover after MongoDB restarts.
 
 ## Local Development
 
@@ -15,8 +101,8 @@ deployment or incident-response process is currently documented in the repositor
 
 ### Configuration
 
-Configure the backend process with `MONGO_URL` and `DB_NAME`. Optionally constrain
-`CORS_ORIGINS`; the code default is `*`. Configure the frontend with
+Configure the backend process with `MONGO_URL` and `DB_NAME`. Set `CORS_ORIGINS` explicitly to
+`http://localhost:3000` for the separate local frontend; blank or omitted disables CORS. Configure the frontend with
 `REACT_APP_BACKEND_URL` pointing to the API origin. Environment files are ignored by Git and must
 not be committed.
 
@@ -71,6 +157,8 @@ only against a disposable development/test database. Success returns `{"status":
 | API import fails with `KeyError: MONGO_URL` or `DB_NAME` | Required backend environment is missing | Set both variables before starting Uvicorn. |
 | Browser requests target `undefined/api` | `REACT_APP_BACKEND_URL` was absent at frontend build/start time | Set the variable and restart/rebuild the frontend. |
 | Browser reports CORS errors | Frontend origin is not in `CORS_ORIGINS` | Add the exact origin and restart the API. |
+| Compose rejects its configuration | `MONGO_ROOT_PASSWORD` is blank or absent | Generate a URL-safe password and set it in the untracked `.env`. |
+| A Compose service remains unhealthy | MongoDB authentication, startup, or API readiness failed | Inspect `docker compose ps` and the last 200 service log lines. |
 | Integration tests cannot connect to port 8001 | API is not running or `REACT_APP_BACKEND_URL` points elsewhere | Start the API or set the test URL explicitly. |
 | Expected mock records are absent | Seed marker exists but collections were changed | After confirming the database is disposable, call `/api/reset`. |
 | Frontend health routes are absent | Health plugin was not enabled before startup | Restart with `ENABLE_HEALTH_CHECK=true`. |
@@ -78,8 +166,12 @@ only against a disposable development/test database. Success returns `{"status":
 ## Recovery and Escalation
 
 - For local mock-data corruption, reseed only after confirming the target database can be erased.
-- No backup, rollback, production access, on-call owner, or escalation contact is documented. Obtain
-  those details from the project owner before operating a non-local environment.
+- For a failed container update, retain `.env` and the MongoDB volume, restore the previous code or
+  image inputs, rebuild, and run `docker compose up -d`.
+- Docker daemon log rotation and disk alerting are host-managed. Inspect disk use before any Docker
+  pruning action and never prune volumes without identifying their owners.
+- No production access, on-call owner, or escalation contact is documented. Obtain those details
+  before storing sensitive or non-mock data.
 
 ## Runbook Template
 

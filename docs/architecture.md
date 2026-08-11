@@ -42,6 +42,18 @@ description of the repository as it exists, not a production target architecture
 | MongoDB | Store all operational collections and the seed marker | Yes | `MONGO_URL`, `DB_NAME` |
 | Frontend health-check plugin | Expose optional development-server build/liveness details | In-memory build state | CRACO/webpack dev server, `ENABLE_HEALTH_CHECK` |
 
+## Deployment Topology
+
+Docker Compose is the supported trusted-LAN deployment. Nginx is the only component with a
+published host port; it serves the React production bundle and proxies same-origin `/api` requests.
+One non-root, read-only FastAPI container connects to authenticated MongoDB over an internal data
+network. MongoDB uses a named volume, and health checks gate startup in dependency order.
+
+```text
+Trusted LAN :8082 -> Nginx/React -> FastAPI:8000 -> MongoDB:27017
+                      published       internal       internal + volume
+```
+
 ## Dependency Direction
 
 The current codebase is a two-tier application with route handlers containing both workflow logic
@@ -77,19 +89,19 @@ MongoDB
 
 ## Non-Functional Requirements
 
-- **Security:** No authentication or authorization is implemented. CORS defaults to `*`; deployment
-  must explicitly constrain it. The reset endpoint is unauthenticated and destructive to configured
-  collections.
+- **Security:** No application authentication or authorization is implemented. Production uses
+  same-origin API requests and disables CORS unless origins are explicitly configured. The reset
+  endpoint remains unauthenticated and destructive to configured collections. Plain HTTP exposure
+  is restricted to a trusted LAN or VPN.
 - **Performance:** Queries use fixed upper bounds and mostly filter or aggregate in application
   memory. No performance targets or indexes are documented.
-- **Availability:** The optional `/health*` routes belong to the frontend development server. No API
-  health/readiness contract or production availability target is defined.
+- **Availability:** FastAPI exposes process liveness and Mongo-backed readiness endpoints. Compose
+  uses readiness to order startup; no production availability target is defined.
 - **Observability:** The API configures standard Python logging; the optional webpack plugin tracks
   development build health. No metrics, tracing, or production alerting configuration is tracked.
-- **Scalability:** The tracked repository defines one API process and MongoDB connection, with no
-  deployment topology or capacity targets.
+- **Scalability:** Compose deliberately runs one API worker and one MongoDB service. No horizontal
+  scaling or capacity targets are defined.
 
 ## Related Decisions
 
-No project-specific ADRs are currently tracked. Use
-[`docs/decisions/ADR_TEMPLATE.md`](decisions/ADR_TEMPLATE.md) for future significant decisions.
+- [`docs/decisions/0001-docker-compose-deployment.md`](decisions/0001-docker-compose-deployment.md)

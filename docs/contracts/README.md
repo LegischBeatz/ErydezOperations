@@ -16,6 +16,8 @@ This directory documents the implemented browser-to-API boundary. The source of 
 | Method and path | Purpose | Notable inputs or rules |
 |---|---|---|
 | `GET /api/` | API identity | Returns the console API message. |
+| `GET /api/health/live` | Process liveness | Does not check MongoDB. |
+| `GET /api/health/ready` | API readiness | Pings MongoDB; returns 503 when persistence is unavailable. |
 | `POST /api/reset` | Rebuild seeded collections | Destructive; intended for disposable/test data. |
 | `GET /api/overview` | Dashboard aggregates | Reads multiple operational collections. |
 | `GET /api/work-items` | List work items | Optional `view`; unknown views fall back to `all-open`. |
@@ -67,8 +69,8 @@ This directory documents the implemented browser-to-API boundary. The source of 
 |---|---|---|---|
 | Backend | `MONGO_URL` | Yes | MongoDB connection URL. |
 | Backend | `DB_NAME` | Yes | MongoDB database name. |
-| Backend | `CORS_ORIGINS` | No | Comma-separated allowed origins; code default is `*`. |
-| Frontend | `REACT_APP_BACKEND_URL` | Yes | API origin without the `/api` suffix. |
+| Backend | `CORS_ORIGINS` | No | Comma-separated allowed origins; omitted or blank disables cross-origin access. |
+| Frontend | `REACT_APP_BACKEND_URL` | Yes for development | API origin without `/api`; the production image sets it blank for same-origin `/api`. |
 | Frontend dev server | `ENABLE_HEALTH_CHECK` | No | Enables custom webpack development health routes when `true`. |
 
 ## Contract Template

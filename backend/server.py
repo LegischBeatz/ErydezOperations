@@ -2,6 +2,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, Body
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import PyMongoError
 import os
 import logging
 import uuid
@@ -54,6 +55,20 @@ async def seed_if_empty():
 @api.get("/")
 async def root():
     return {"message": "E-RYDEZ Operations Console API"}
+
+
+@api.get("/health/live")
+async def health_live():
+    return {"status": "live"}
+
+
+@api.get("/health/ready")
+async def health_ready():
+    try:
+        await db.command("ping")
+    except PyMongoError as exc:
+        raise HTTPException(status_code=503, detail="MongoDB is unavailable") from exc
+    return {"status": "ready"}
 
 
 @api.post("/reset")
@@ -549,13 +564,19 @@ async def global_search(q: str):
 
 app.include_router(api)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+cors_origins = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)

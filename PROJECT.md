@@ -21,8 +21,9 @@ in this repository.
 - **Core capabilities:** Operational overview and work queue; order and conversation handling;
   fulfillment scanning and stage transitions; inventory, return, and appointment workflows;
   purchasing, reports, automations, approvals, notifications, and global search.
-- **Deployment environment:** No production deployment definition is tracked. The code supports a
-  local React development server, a local FastAPI process, and a configured MongoDB instance.
+- **Deployment environment:** Docker Compose is the supported trusted-LAN deployment. It runs a
+  production React bundle behind Nginx, one FastAPI worker, and authenticated MongoDB. Local
+  React, FastAPI, and MongoDB processes remain supported for development.
 - **Primary technologies:** JavaScript/JSX with React and CRACO; Python with FastAPI and Motor;
   MongoDB; pytest-based HTTP integration tests.
 
@@ -35,6 +36,13 @@ in this repository.
   `backend/seed.py` when the seed marker is absent.
 - **Validation:** pytest with pytest-xdist for the live HTTP API suite; CRACO build tooling for the
   frontend.
+
+## Deployment Boundary
+
+The Compose stack publishes only the Nginx frontend, on port `8082` by default. It provides no TLS,
+application authentication, authorization, or tenant isolation and must remain on a trusted LAN or
+VPN. The data and integration records are mock data; this deployment does not make any named
+external integration live.
 
 ## Important Links
 

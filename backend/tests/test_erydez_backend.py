@@ -25,6 +25,19 @@ def s():
     return requests.Session()
 
 
+# ---------------- Health ----------------
+def test_health_live(s):
+    r = s.get(f"{API}/health/live", timeout=10)
+    assert r.status_code == 200
+    assert r.json() == {"status": "live"}
+
+
+def test_health_ready(s):
+    r = s.get(f"{API}/health/ready", timeout=10)
+    assert r.status_code == 200
+    assert r.json() == {"status": "ready"}
+
+
 # ---------------- Overview ----------------
 def test_overview(s):
     r = s.get(f"{API}/overview")
