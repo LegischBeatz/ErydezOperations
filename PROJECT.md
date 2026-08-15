@@ -11,8 +11,10 @@ in this repository.
 
 ## Current Goals
 
-- No active product outcomes are documented in the tracked repository. Confirm priorities with the
-  project owner before treating commit-message follow-ups or mock UI affordances as planned work.
+- Establish a reproducible Docker-based 1.0 installation baseline, with Windows/Docker Desktop as
+  the first verified host path and equivalent Linux/macOS documentation.
+- Keep production prerequisites explicit: authentication, TLS, live integrations, migrations,
+  backups, and monitoring are not included in the mock-backed 1.0 baseline.
 
 ## System Snapshot
 

@@ -1,0 +1,47 @@
+name: Compose smoke
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  compose-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create disposable Compose environment
+        run: |
+          cp .env.example .env
+          sed -i 's/^MONGO_ROOT_PASSWORD=.*/MONGO_ROOT_PASSWORD=ci-only-password-1234567890/' .env
+
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+
+      - name: Build and start stack
+        run: docker compose up -d --build
+
+      - name: Wait for and verify health endpoints
+        run: |
+          for attempt in {1..36}; do
+            if curl --fail --silent http://127.0.0.1:8082/api/health/ready \
+              && curl --fail --silent http://127.0.0.1:8082/healthz \
+              && curl --fail --silent http://127.0.0.1:8082/orders; then
+              exit 0
+            fi
+            sleep 5
+          done
+          docker compose ps
+          docker compose logs --tail=200 frontend backend mongodb
+          exit 1
+
+      - name: Confirm only frontend is published
+        run: |
+          test "$(docker compose port frontend 80)" != ""
+          test -z "$(docker compose port backend 8000)"
+          test -z "$(docker compose port mongodb 27017)"
+
+      - name: Tear down disposable stack
+        if: always()
+        run: docker compose down --volumes

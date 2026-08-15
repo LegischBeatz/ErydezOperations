@@ -18,10 +18,29 @@ collections; never use it with data that must be retained.
 ### Prerequisites
 
 - Docker Engine with the Compose plugin.
+- Windows operators: Docker Desktop with the WSL2 backend and Linux containers. PowerShell 5.1+
+  or PowerShell 7 is supported.
+- Linux/macOS operators: Docker Engine or Docker Desktop with the Compose plugin.
 - Host firewall or VPN rules limiting TCP port `8082` to trusted clients.
 - Sufficient Docker storage for images, logs, and the MongoDB volume.
 
 ### Configure and Start
+
+#### Windows (first supported host path)
+
+From PowerShell at the repository root, run:
+
+```powershell
+.\scripts\setup-windows.ps1
+```
+
+The script does not overwrite an existing `.env`. It generates a URL-safe password using Windows
+cryptography APIs, validates Compose, builds the images, starts the stack, and checks the frontend,
+liveness, and readiness endpoints. Use `-Port 8085` if port `8082` is already occupied. If Docker
+Desktop reports that the daemon is unavailable, start it and confirm that Linux containers are
+selected before rerunning the script.
+
+#### Linux and macOS
 
 Create the untracked Compose environment and generate a URL-safe database password:
 
@@ -42,6 +61,10 @@ curl -fsS http://127.0.0.1:8082/api/health/ready
 
 All three services must report healthy. Open `http://<server-address>:8082`; use the configured
 `ERYDEZ_PORT` instead if changed. Only the frontend port should appear under published ports.
+
+On Windows, `localhost` is preferred over a host LAN IP for local use. For LAN use, allow only the
+configured frontend port through the host firewall and remember that application authentication and
+TLS are not implemented.
 
 ### Operate and Update
 
@@ -145,6 +168,11 @@ pytest
 `pytest -n 0` and do not edit the configured defaults. The frontend currently has no tracked test
 files; if tests are added, run `npm test -- --watchAll=false`.
 
+The repository also runs a Docker Compose smoke workflow in CI. It validates the Compose file,
+builds all images, waits for service health, checks representative routes, and removes its
+disposable volume afterward. CI runs on Linux; Windows Docker Desktop behavior is covered by the
+PowerShell acceptance procedure above.
+
 ## Reset Seed Data
 
 `POST /api/reset` deletes and recreates every collection represented by `backend/seed.py`. Use it
@@ -158,6 +186,8 @@ only against a disposable development/test database. Success returns `{"status":
 | Browser requests target `undefined/api` | `REACT_APP_BACKEND_URL` was absent at frontend build/start time | Set the variable and restart/rebuild the frontend. |
 | Browser reports CORS errors | Frontend origin is not in `CORS_ORIGINS` | Add the exact origin and restart the API. |
 | Compose rejects its configuration | `MONGO_ROOT_PASSWORD` is blank or absent | Generate a URL-safe password and set it in the untracked `.env`. |
+| PowerShell script cannot find Docker | Docker Desktop is not installed, running, or using Linux containers | Start Docker Desktop, select Linux containers, and rerun the helper. |
+| Windows port is already allocated | Another service owns port `8082` | Stop the conflicting service or run the helper with `-Port <free-port>`. |
 | A Compose service remains unhealthy | MongoDB authentication, startup, or API readiness failed | Inspect `docker compose ps` and the last 200 service log lines. |
 | Integration tests cannot connect to port 8001 | API is not running or `REACT_APP_BACKEND_URL` points elsewhere | Start the API or set the test URL explicitly. |
 | Expected mock records are absent | Seed marker exists but collections were changed | After confirming the database is disposable, call `/api/reset`. |
