@@ -12,14 +12,26 @@ deployment.
 
 ## Quick start on Windows
 
-Install Docker Desktop, enable the WSL2 backend, and select Linux containers. In PowerShell, from
-the cloned repository, run:
+Docker must be installed before this repository can be started. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/),
+enable the WSL2 backend, and select Linux containers. Start Docker Desktop and wait until it reports
+that Docker is running. In PowerShell, verify the installation before running the repository setup:
+
+```powershell
+docker --version
+docker compose version
+docker info
+```
+
+All three commands must work; `docker info` confirms that the Docker Desktop engine is running.
+Then, from the cloned repository, run:
 
 ```powershell
 .\scripts\setup-windows.ps1
 ```
 
-The helper creates `.env` only when it does not exist, generates a database password, builds the
+The helper does not install Docker Desktop or change Windows virtualization settings because those
+steps require an administrator and system-level configuration. It creates `.env` only when it does
+not exist, generates a database password, builds the
 images, starts the stack, and checks the health endpoints. Open `http://localhost:8082` when it
 reports ready. Use `-Port 8085` to choose another host port, or `-SkipBuild` when the images are
 already current.

@@ -16,9 +16,13 @@ function Invoke-Checked([string]$Command, [string[]]$Arguments) {
 
 Write-Host "Checking Docker Desktop and Compose..."
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    throw "Docker CLI was not found. Install Docker Desktop and enable Linux containers."
+    throw "Docker CLI was not found. Install Docker Desktop, restart PowerShell, and enable Linux containers before running this script."
 }
-Invoke-Checked "docker" @("info")
+try {
+    Invoke-Checked "docker" @("info")
+} catch {
+    throw "Docker Desktop is installed but its engine is not available. Start Docker Desktop, enable the WSL2 backend/Linux containers, wait until Docker is running, and rerun this script."
+}
 Invoke-Checked "docker" @("compose", "version")
 
 if (-not (Test-Path ".env")) {

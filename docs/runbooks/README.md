@@ -18,8 +18,8 @@ collections; never use it with data that must be retained.
 ### Prerequisites
 
 - Docker Engine with the Compose plugin.
-- Windows operators: Docker Desktop with the WSL2 backend and Linux containers. PowerShell 5.1+
-  or PowerShell 7 is supported.
+- Windows operators: [Docker Desktop](https://www.docker.com/products/docker-desktop/) with the
+  WSL2 backend and Linux containers. PowerShell 5.1+ or PowerShell 7 is supported.
 - Linux/macOS operators: Docker Engine or Docker Desktop with the Compose plugin.
 - Host firewall or VPN rules limiting TCP port `8082` to trusted clients.
 - Sufficient Docker storage for images, logs, and the MongoDB volume.
@@ -27,6 +27,19 @@ collections; never use it with data that must be retained.
 ### Configure and Start
 
 #### Windows (first supported host path)
+
+Docker Desktop is a prerequisite and is not installed by the repository script. Install it, enable
+the WSL2 backend, select Linux containers, start Docker Desktop, and wait for the engine to become
+ready. Verify the installation in PowerShell:
+
+```powershell
+docker --version
+docker compose version
+docker info
+```
+
+`docker info` must return engine details rather than a daemon-connection error. If it fails, start
+Docker Desktop and rerun the command before continuing.
 
 From PowerShell at the repository root, run:
 
@@ -186,7 +199,8 @@ only against a disposable development/test database. Success returns `{"status":
 | Browser requests target `undefined/api` | `REACT_APP_BACKEND_URL` was absent at frontend build/start time | Set the variable and restart/rebuild the frontend. |
 | Browser reports CORS errors | Frontend origin is not in `CORS_ORIGINS` | Add the exact origin and restart the API. |
 | Compose rejects its configuration | `MONGO_ROOT_PASSWORD` is blank or absent | Generate a URL-safe password and set it in the untracked `.env`. |
-| PowerShell script cannot find Docker | Docker Desktop is not installed, running, or using Linux containers | Start Docker Desktop, select Linux containers, and rerun the helper. |
+| PowerShell script cannot find Docker | Docker Desktop is not installed or its CLI is not on `PATH` | Install Docker Desktop, restart PowerShell, and verify `docker --version`. |
+| Docker CLI cannot connect to the daemon | Docker Desktop is not running or Linux containers/WSL2 is unavailable | Start Docker Desktop, enable WSL2/Linux containers, verify with `docker info`, and rerun the helper. |
 | Windows port is already allocated | Another service owns port `8082` | Stop the conflicting service or run the helper with `-Port <free-port>`. |
 | A Compose service remains unhealthy | MongoDB authentication, startup, or API readiness failed | Inspect `docker compose ps` and the last 200 service log lines. |
 | Integration tests cannot connect to port 8001 | API is not running or `REACT_APP_BACKEND_URL` points elsewhere | Start the API or set the test URL explicitly. |
