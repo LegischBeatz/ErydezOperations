@@ -212,49 +212,52 @@ def connection_health(connection: dict[str, Any]) -> dict[str, Any]:
     lifecycle = connection.get("lifecycle_state") or "setup_required"
     owner_ready = bool((connection.get("business_owner") or {}).get("display_name"))
     recovery_ready = bool((connection.get("recovery_owner") or {}).get("display_name"))
+    gmail_data_plane = connection.get("provider") == "gmail" and "oauth_authorization" in (connection.get("capabilities") or [])
     dimensions = {
         "configuration": {
             "status": "healthy" if owner_ready else "degraded",
             "detail": "Business owner assigned" if owner_ready else "Assign a business owner before provider activation.",
         },
         "authorization": {
-            "status": "not_configured",
-            "detail": "Application-owned Gmail authorization is deferred to F-009b; no OAuth credential is stored.",
+            "status": "connected" if gmail_data_plane and lifecycle == "active" else "not_configured",
+            "detail": "Google OAuth authorization is active; encrypted refresh credentials are retained locally." if gmail_data_plane and lifecycle == "active" else "Connect a Gmail account through the Google OAuth consent flow.",
         },
         "receiver": {
-            "status": "not_configured",
-            "detail": "The local console has no always-on public callback endpoint.",
+            "status": "on_demand" if gmail_data_plane else "not_configured",
+            "detail": "Threads are retrieved on demand through the Gmail API." if gmail_data_plane else "The Gmail data plane is not connected.",
         },
         "subscription": {
-            "status": "not_built",
-            "detail": "Gmail watch and Pub/Sub handling are outside F-009a.",
+            "status": "not_configured",
+            "detail": "Gmail push watch and Pub/Sub delivery are not enabled; the console refreshes on demand.",
         },
         "reconciliation": {
-            "status": "not_built",
-            "detail": "Provider event reconciliation is blocked on F-070 and F-021.",
+            "status": "on_demand" if gmail_data_plane else "not_configured",
+            "detail": "Conversation data is reconciled against the Gmail API when the operator refreshes the inbox." if gmail_data_plane else "No Gmail data is available for reconciliation.",
         },
         "recovery_owner": {
             "status": "healthy" if recovery_ready else "pending",
-            "detail": "Recovery owner assigned" if recovery_ready else "Recovery owner can be assigned later; no provider action is enabled.",
+            "detail": "Recovery owner assigned" if recovery_ready else "Recovery owner can be assigned later.",
         },
     }
-    if lifecycle == "paused":
+    if lifecycle == "active" and gmail_data_plane:
+        status, next_action = "healthy", "Gmail threads can be refreshed on demand; review any AI draft before sending."
+    elif lifecycle == "paused":
         status, next_action = "paused", "Resume only when the local operator confirms the intended state."
     elif lifecycle == "disconnect_pending":
-        status, next_action = "disconnect_pending", "Review provider dependencies and retention before completing a future disconnect."
+        status, next_action = "disconnect_pending", "Review provider dependencies and retention before completing a disconnect."
     elif lifecycle == "disconnected":
-        status, next_action = "disconnected", "Register a new connection before any future provider feature."
+        status, next_action = "disconnected", "Connect a Gmail account before using inbox features."
     elif lifecycle == "reauthorization_required":
-        status, next_action = "reauthorization_required", "F-009b public deployment and application-owned Gmail authorization are required."
+        status, next_action = "reauthorization_required", "Re-connect the Gmail account through the Google OAuth consent flow."
     else:
-        status, next_action = "setup_required", "Complete F-009a controls; keep Gmail data-plane features disabled until F-009b, F-070, and F-021 are complete."
+        status, next_action = "setup_required", "Configure Google OAuth and connect a Gmail account before using inbox features."
     return {
         "connection_id": connection["id"],
         "checked_at": integration_now(),
         "overall_status": status,
         "dimensions": dimensions,
         "next_action": next_action,
-        "scope_note": "F-009a evaluates control-plane readiness only. It does not read, send, or synchronize Gmail data.",
+        "scope_note": "Gmail OAuth credentials are encrypted at rest. Gmail threads are retrieved on demand; no Gmail watch or background synchronization is enabled.",
     }
 
 
@@ -376,6 +379,18 @@ async def ensure_indexes() -> None:
             IndexModel([("connection_id", ASCENDING), ("created_at", DESCENDING)], name="connection_audit_history"),
             IndexModel([("actor", ASCENDING), ("created_at", DESCENDING)], name="connection_audit_actor"),
         ]
+    )
+    await db.gmail_oauth_tokens.create_indexes(
+        [IndexModel([("id", ASCENDING)], name="gmail_oauth_token_id", unique=True)]
+    )
+    await db.gmail_oauth_states.create_indexes(
+        [
+            IndexModel([("state_hash", ASCENDING)], name="gmail_oauth_state_hash", unique=True),
+            IndexModel([("expires_at", ASCENDING)], name="gmail_oauth_state_expiry", expireAfterSeconds=0),
+        ]
+    )
+    await db.gmail_sync_state.create_indexes(
+        [IndexModel([("id", ASCENDING)], name="gmail_sync_state_id", unique=True)]
     )
 
 
@@ -1092,6 +1107,207 @@ async def empty_automation_runs() -> list[Any]:
 @api.get("/purchasing")
 async def empty_purchasing() -> dict[str, list[Any]]:
     return {"suppliers": [], "purchase_orders": []}
+
+
+# ---------------------------------------------------------------------------
+# Gmail Integration (Google OAuth 2.0 + Gmail REST API)
+# ---------------------------------------------------------------------------
+
+from fastapi.responses import RedirectResponse
+from gmail_service import (
+    GmailPausedError,
+    GmailServiceError,
+    complete_oauth_authorization,
+    disconnect_gmail,
+    generate_ai_reply,
+    gmail_status,
+    list_threads,
+    read_thread,
+    send_thread_reply,
+    start_oauth_authorization,
+)
+
+GMAIL_CONNECTION_ID = "gmail-local"
+
+
+def gmail_http_exception(exc: GmailServiceError) -> HTTPException:
+    """Map safe Gmail service failures to the appropriate HTTP response."""
+    return HTTPException(status_code=getattr(exc, "status_code", 502), detail=str(exc))
+
+
+async def gmail_connection_or_none() -> dict[str, Any] | None:
+    return await db[INTEGRATION_CONNECTIONS].find_one({"id": GMAIL_CONNECTION_ID}, NO_ID)
+
+
+async def require_active_gmail_connection() -> None:
+    connection = await gmail_connection_or_none()
+    if connection and connection.get("lifecycle_state") in {"paused", "disconnect_pending", "disconnected"}:
+        raise GmailPausedError("Die Gmail-Verbindung ist durch die lokale Betriebssteuerung pausiert")
+
+
+async def record_gmail_connection(email_address: str, action: str, reason: str) -> dict[str, Any]:
+    """Persist only safe Gmail connection metadata; OAuth tokens stay separate and encrypted."""
+    existing = await gmail_connection_or_none()
+    timestamp = integration_now()
+    connection = {
+        "id": GMAIL_CONNECTION_ID,
+        "provider": "gmail",
+        "environment": "local",
+        "display_identity": email_address,
+        "lifecycle_state": "active",
+        "desired_state": "active",
+        "capabilities": ["oauth_authorization", "thread_read", "thread_reply", "on_demand_sync", "ai_reply_draft"],
+        "business_owner": {"display_name": email_address, "status": "confirmed"},
+        "recovery_owner": (existing or {}).get("recovery_owner") or {"display_name": None, "status": "pending"},
+        "created_at": (existing or {}).get("created_at") or timestamp,
+        "updated_at": timestamp,
+        "last_action_reason": reason,
+    }
+    await db[INTEGRATION_CONNECTIONS].replace_one({"id": GMAIL_CONNECTION_ID}, connection, upsert=True)
+    await append_integration_audit(
+        GMAIL_CONNECTION_ID,
+        local_operator_label(),
+        action,
+        reason,
+        (existing or {}).get("lifecycle_state"),
+        "active",
+    )
+    return connection
+
+
+@api.get("/gmail/status")
+async def gmail_connection_status() -> dict[str, Any]:
+    """Return safe OAuth and Gmail connection metadata without any token fields."""
+    status = await gmail_status(db)
+    connection = await gmail_connection_or_none()
+    return {
+        **status,
+        "lifecycle_state": (connection or {}).get("lifecycle_state") or "setup_required",
+        "connection": public_connection(connection) if connection else None,
+    }
+
+
+@api.get("/gmail/oauth/start")
+async def gmail_oauth_start() -> RedirectResponse:
+    """Start a CSRF-protected Google OAuth 2.0 authorization-code flow."""
+    try:
+        url = await start_oauth_authorization(db)
+        return RedirectResponse(url=url, status_code=302)
+    except GmailServiceError as exc:
+        raise gmail_http_exception(exc) from exc
+
+
+@api.get("/gmail/oauth/callback")
+async def gmail_oauth_callback(code: str | None = None, state: str | None = None, error: str | None = None) -> RedirectResponse:
+    """Complete Google OAuth 2.0 and return the browser to the Gmail workspace."""
+    if error:
+        logger.info("Google OAuth was not completed: %s", error[:80])
+        return RedirectResponse(url="/gmail?oauth=cancelled", status_code=303)
+    try:
+        result = await complete_oauth_authorization(db, code or "", state or "")
+        await record_gmail_connection(result["email_address"], "oauth_connected", "Google OAuth authorization completed")
+        return RedirectResponse(url="/gmail?oauth=connected", status_code=303)
+    except GmailServiceError as exc:
+        logger.warning("Google OAuth callback failed: %s", exc)
+        return RedirectResponse(url="/gmail?oauth=failed", status_code=303)
+
+
+@api.post("/gmail/disconnect")
+async def gmail_disconnect() -> dict[str, Any]:
+    """Revoke local Gmail authorization and remove encrypted credentials."""
+    connection = await gmail_connection_or_none()
+    try:
+        await disconnect_gmail(db)
+    except GmailServiceError as exc:
+        raise gmail_http_exception(exc) from exc
+    timestamp = integration_now()
+    await db[INTEGRATION_CONNECTIONS].update_one(
+        {"id": GMAIL_CONNECTION_ID},
+        {"$set": {"lifecycle_state": "disconnected", "desired_state": "disconnected", "display_identity": None, "updated_at": timestamp, "last_action_reason": "Google OAuth access revoked and local token removed"}},
+    )
+    if connection:
+        await append_integration_audit(
+            GMAIL_CONNECTION_ID,
+            local_operator_label(),
+            "oauth_disconnected",
+            "Google OAuth access revoked and local token removed",
+            connection.get("lifecycle_state"),
+            "disconnected",
+        )
+    return {"ok": True}
+
+
+@api.get("/gmail/threads")
+async def gmail_list_threads(
+    q: str | None = None,
+    max_results: int = Query(default=25, ge=1, le=100),
+    page_token: str | None = None,
+) -> dict[str, Any]:
+    """List Gmail threads with optional Gmail search syntax."""
+    try:
+        await require_active_gmail_connection()
+        return await list_threads(db, query=q, max_results=max_results, page_token=page_token)
+    except GmailServiceError as exc:
+        raise gmail_http_exception(exc) from exc
+
+
+@api.get("/gmail/threads/{thread_id}")
+async def gmail_get_thread(thread_id: str) -> dict[str, Any]:
+    """Read a complete Gmail thread for display and drafting."""
+    try:
+        await require_active_gmail_connection()
+        return await read_thread(db, thread_id)
+    except GmailServiceError as exc:
+        raise gmail_http_exception(exc) from exc
+
+
+@api.post("/gmail/threads/{thread_id}/ai-reply")
+async def gmail_generate_ai_reply(
+    thread_id: str,
+    payload: dict[str, Any] = Body(default={}),
+) -> dict[str, Any]:
+    """Generate an editable draft; it never sends a message."""
+    try:
+        await require_active_gmail_connection()
+        thread = await read_thread(db, thread_id)
+        messages = thread.get("messages") or []
+        if not messages:
+            raise HTTPException(status_code=422, detail="Thread enthält keine Nachrichten")
+        return generate_ai_reply(
+            thread_messages=messages,
+            sender_name=str(payload.get("sender_name") or "E-RYDEZ Team")[:100],
+            language_hint=str(payload.get("language") or "")[:50] or None,
+            custom_instructions=str(payload.get("instructions") or "")[:500] or None,
+        )
+    except GmailServiceError as exc:
+        raise gmail_http_exception(exc) from exc
+
+
+@api.post("/gmail/send")
+async def gmail_send_message(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    """Send an explicitly confirmed reply in its existing Gmail conversation.
+
+    Recipients, subject, and RFC threading headers are derived from the source
+    Gmail thread. Browser-provided recipient headers are intentionally ignored.
+    """
+    thread_id = str(payload.get("thread_id") or "").strip()
+    content = str(payload.get("content") or "")
+    if not thread_id:
+        raise HTTPException(status_code=422, detail="Gmail-Thread-ID ist erforderlich")
+    try:
+        await require_active_gmail_connection()
+        result = await send_thread_reply(db, thread_id, content)
+        await append_integration_audit(
+            GMAIL_CONNECTION_ID,
+            local_operator_label(),
+            "thread_reply_sent",
+            "User-confirmed Gmail reply sent in existing thread",
+            "active",
+            "active",
+        )
+        return {"ok": True, "result": result}
+    except GmailServiceError as exc:
+        raise gmail_http_exception(exc) from exc
 
 
 app.include_router(api)

@@ -36,6 +36,15 @@ export const api = {
   syncRuns: () => get("/shopify/sync-runs"),
   syncShopify: () => post("/shopify/sync", {}),
 
+  // Gmail integration (Google OAuth 2.0 + Gmail API)
+  gmailStatus: () => get("/gmail/status"),
+  gmailOAuthStartUrl: () => `${BASE}/gmail/oauth/start`,
+  gmailDisconnect: () => post("/gmail/disconnect", {}),
+  gmailThreads: (params) => get("/gmail/threads", params),
+  gmailThread: (threadId) => get(`/gmail/threads/${encodeURIComponent(threadId)}`),
+  gmailAiReply: (threadId, body) => post(`/gmail/threads/${encodeURIComponent(threadId)}/ai-reply`, body || {}),
+  gmailSend: (body) => post("/gmail/send", body),
+
   // Temporary compatibility helpers for pages removed from primary navigation.
   workItems: (view) => get("/work-items", { view }),
   updateWorkItem: (id, body) => patch(`/work-items/${id}`, body),

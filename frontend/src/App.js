@@ -14,6 +14,7 @@ import Returns from "@/pages/Returns";
 import AuditTimeline from "@/pages/AuditTimeline";
 import ProviderLedger from "@/pages/ProviderLedger";
 import Settings from "@/pages/Settings";
+import GmailInbox from "@/pages/GmailInbox";
 import { Toaster } from "@/components/ui/sonner";
 import { LocaleProvider } from "@/lib/i18n";
 
@@ -34,6 +35,7 @@ function App() {
             <Route path="/customers/:customerId" element={<CustomerDetail />} />
             <Route path="/fulfillment" element={<Fulfillment />} />
             <Route path="/returns" element={<Returns />} />
+            <Route path="/gmail" element={<GmailInbox />} />
             <Route path="/audit-timeline" element={<AuditTimeline />} />
             <Route path="/provider-ledger" element={<ProviderLedger />} />
             <Route path="/settings" element={<Navigate to="/settings/integrations" replace />} />

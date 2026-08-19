@@ -60,14 +60,27 @@ def test_public_connection_never_serializes_secret_like_fields():
     }
 
 
-def test_control_plane_health_does_not_claim_message_readiness():
+def test_control_plane_health_remains_unconfigured_until_oauth_is_connected():
     health = server.connection_health(sample_connection())
     assert health["overall_status"] == "setup_required"
     assert health["dimensions"]["authorization"]["status"] == "not_configured"
     assert health["dimensions"]["receiver"]["status"] == "not_configured"
-    assert health["dimensions"]["subscription"]["status"] == "not_built"
-    assert health["dimensions"]["reconciliation"]["status"] == "not_built"
-    assert "does not read, send, or synchronize Gmail data" in health["scope_note"]
+    assert health["dimensions"]["subscription"]["status"] == "not_configured"
+    assert health["dimensions"]["reconciliation"]["status"] == "not_configured"
+    assert "encrypted at rest" in health["scope_note"]
+
+
+def test_active_google_oauth_connection_reports_on_demand_gmail_capabilities():
+    connection = sample_connection(
+        lifecycle_state="active",
+        desired_state="active",
+        capabilities=["oauth_authorization", "thread_read", "thread_reply", "on_demand_sync"],
+    )
+    health = server.connection_health(connection)
+    assert health["overall_status"] == "healthy"
+    assert health["dimensions"]["authorization"]["status"] == "connected"
+    assert health["dimensions"]["receiver"]["status"] == "on_demand"
+    assert health["dimensions"]["reconciliation"]["status"] == "on_demand"
 
 
 def test_paused_connection_has_explicit_non_provider_action():

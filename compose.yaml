@@ -39,6 +39,15 @@ services:
       SHOPIFY_API_VERSION: ${SHOPIFY_API_VERSION:-2025-10}
       SHOPIFY_CLIENT_ID: ${SHOPIFY_CLIENT_ID:?Set SHOPIFY_CLIENT_ID in .env}
       SHOPIFY_CLIENT_SECRET: ${SHOPIFY_CLIENT_SECRET:?Set SHOPIFY_CLIENT_SECRET in .env}
+      # Gmail OAuth secrets stay only in .env (never commit them). The redirect URI must match Google Cloud exactly.
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GMAIL_OAUTH_REDIRECT_URI: ${GMAIL_OAUTH_REDIRECT_URI:-http://localhost:${ERYDEZ_PORT:-8082}/api/gmail/oauth/callback}
+      GMAIL_TOKEN_ENCRYPTION_KEY: ${GMAIL_TOKEN_ENCRYPTION_KEY:-}
+      # The AI key is optional for mailbox access; it is required only for answer drafts.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_BASE: ${OPENAI_API_BASE:-}
+      GMAIL_AI_MODEL: ${GMAIL_AI_MODEL:-gpt-5-mini}
       CORS_ORIGINS: ""
     depends_on:
       mongodb:
