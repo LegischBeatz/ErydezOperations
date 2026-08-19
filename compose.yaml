@@ -33,6 +33,12 @@ services:
     environment:
       MONGO_URL: mongodb://${MONGO_ROOT_USERNAME:-erydez}:${MONGO_ROOT_PASSWORD:?Set MONGO_ROOT_PASSWORD in .env}@mongodb:27017/${DB_NAME:-erydez_operations}?authSource=admin&serverSelectionTimeoutMS=5000
       DB_NAME: ${DB_NAME:-erydez_operations}
+      ERYDEZ_LOCAL_OPERATOR_LABEL: ${ERYDEZ_LOCAL_OPERATOR_LABEL:-Local operator}
+      # Shopify client credentials stay in the local .env and are passed only to the backend.
+      SHOPIFY_STORE_DOMAIN: ${SHOPIFY_STORE_DOMAIN:?Set SHOPIFY_STORE_DOMAIN in .env}
+      SHOPIFY_API_VERSION: ${SHOPIFY_API_VERSION:-2025-10}
+      SHOPIFY_CLIENT_ID: ${SHOPIFY_CLIENT_ID:?Set SHOPIFY_CLIENT_ID in .env}
+      SHOPIFY_CLIENT_SECRET: ${SHOPIFY_CLIENT_SECRET:?Set SHOPIFY_CLIENT_SECRET in .env}
       CORS_ORIGINS: ""
     depends_on:
       mongodb:
@@ -60,7 +66,7 @@ services:
         REACT_APP_BACKEND_URL: ""
     restart: unless-stopped
     ports:
-      - "0.0.0.0:${ERYDEZ_PORT:-8082}:80"
+      - "127.0.0.1:${ERYDEZ_PORT:-8082}:80"
     depends_on:
       backend:
         condition: service_healthy

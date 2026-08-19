@@ -6,10 +6,10 @@ import {
   Phone, Store, Truck, Calendar, Zap, StickyNote, ShieldCheck, Undo2, PackageCheck,
 } from "lucide-react";
 
-const DANGER = ["critical", "failed", "overdue", "disconnected", "delivery exception", "breached", "critical shortage", "rejected", "exception", "not ready — awaiting stock"];
-const WARN = ["high", "degraded", "delayed", "at risk", "shortage", "approval required", "pending", "awaiting stock", "unconfirmed", "reminder pending", "pending approval", "authorizing", "not sent", "more info requested"];
-const OK = ["healthy", "fulfilled", "resolved", "sent", "delivered", "active", "approved", "ok", "ready", "confirmed", "completed", "item on site", "received", "paid", "success"];
-const INFO = ["in progress", "scheduled", "picking", "packed", "allocated", "open", "normal", "in transit", "in production", "under review", "handed off", "upcoming", "ready to allocate", "sending", "carrier handoff / ready for pickup"];
+const DANGER = ["critical", "failed", "overdue", "disconnected", "delivery exception", "breached", "critical shortage", "rejected", "exception", "not ready — awaiting stock", "refunded", "cancelled", "voided", "inactive"];
+const WARN = ["high", "degraded", "delayed", "at risk", "shortage", "approval required", "pending", "awaiting stock", "unconfirmed", "reminder pending", "pending approval", "authorizing", "not sent", "more info requested", "partially refunded", "partially fulfilled", "unfulfilled", "unpaid", "on hold", "draft"];
+const OK = ["healthy", "fulfilled", "resolved", "sent", "delivered", "active", "approved", "ok", "ready", "confirmed", "completed", "item on site", "received", "paid", "fully paid", "success", "tracked", "open"];
+const INFO = ["in progress", "scheduled", "picking", "packed", "allocated", "normal", "in transit", "in production", "under review", "handed off", "upcoming", "ready to allocate", "sending", "carrier handoff / ready for pickup", "configured", "authorized", "partially paid"];
 
 export function tone(value) {
   const v = String(value || "").toLowerCase();

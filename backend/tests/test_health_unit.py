@@ -29,3 +29,17 @@ def test_readiness_returns_503_when_mongodb_is_unavailable(monkeypatch):
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == "MongoDB is unavailable"
+
+
+def test_readiness_reports_snapshot_state(monkeypatch):
+    class AvailableDatabase:
+        async def command(self, _command):
+            return {"ok": 1}
+
+    async def no_snapshot():
+        return None
+
+    monkeypatch.setattr(server, "db", AvailableDatabase())
+    monkeypatch.setattr(server, "active_sync_document", no_snapshot)
+    result = asyncio.run(server.health_ready())
+    assert result == {"status": "ready", "shopify_snapshot_active": False}

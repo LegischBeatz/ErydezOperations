@@ -2,54 +2,40 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 import useSWR from "swr";
 import { api } from "@/lib/api";
-import { fmtDate } from "@/lib/format";
-import { PageHeader, StatusChip, EmptyState } from "@/components/common";
-import { useT } from "@/lib/i18n";
+import { fmtDateTime } from "@/lib/format";
+import { money, statusLabel } from "@/lib/shopify";
+import { EmptyState, PageHeader, SectionCard, StatusChip } from "@/components/common";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 
-const COLS = ["RMA", "Order", "Customer", "Product", "Type", "Problem", "State", "Age", "Financial impact"];
-
 export default function Returns() {
-  const { t } = useT();
   const navigate = useNavigate();
-  const { data: returns, isLoading } = useSWR("returns", api.returns);
+  const { data: returns, isLoading: loadingReturns, error: returnsError } = useSWR("returns", api.returns);
+  const { data: refunds, isLoading: loadingRefunds, error: refundsError } = useSWR("refunds", api.refunds);
+  const loading = loadingReturns || loadingRefunds;
+  const error = returnsError || refundsError;
 
   return (
     <div data-testid="returns-page">
-      <PageHeader title={t("Returns & warranty")} freshness={t("Every case stays in a visible, aged workflow until customer outcome and financial action are complete")} />
+      <PageHeader title="Returns & refunds" freshness={`${returns?.length ?? "—"} Shopify Return objects · ${refunds?.length ?? "—"} Shopify refunds`} />
       <div className="p-6">
-        {isLoading ? (
-          <div className="space-y-2">{[...Array(4)].map((_, i) => <Skeleton key={i} className="h-12" />)}</div>
-        ) : !returns?.length ? (
-          <EmptyState title={t("No open returns")} description={t("No RMA or warranty cases exist — a genuine zero.")} />
-        ) : (
-          <div className="overflow-x-auto rounded-lg border border-line bg-surface">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-line text-left text-xs font-semibold text-inkmed">
-                  {COLS.map((h) => (
-                    <th key={h} className="whitespace-nowrap px-3 py-2.5">{t(h)}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {returns.map((r) => (
-                  <tr key={r.id} onClick={() => navigate(`/returns/${r.id}`)} data-testid={`rma-row-${r.id}`}
-                    className="h-[52px] cursor-pointer border-b border-line last:border-0 transition-colors hover:bg-subtle">
-                    <td className="tnum px-3 font-medium text-brand">{r.id}</td>
-                    <td className="tnum px-3">{r.order_id}</td>
-                    <td className="px-3">{r.customer.name}</td>
-                    <td className="px-3">{r.product}</td>
-                    <td className="px-3 text-xs">{r.type}</td>
-                    <td className="max-w-56 truncate px-3 text-xs text-inkmed">{r.problem}</td>
-                    <td className="px-3"><StatusChip value={r.state} /></td>
-                    <td className="tnum px-3 text-xs">{r.age_days} {t("days")}</td>
-                    <td className="tnum px-3 text-xs">{r.financial_impact}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {loading ? <Skeleton className="h-[480px] w-full" /> : error ? <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-danger">Unable to load Shopify returns and refunds.</div> : (
+          <Tabs defaultValue="refunds">
+            <TabsList className="mb-4 h-10 bg-subtle"><TabsTrigger value="refunds">Refunds ({refunds?.length || 0})</TabsTrigger><TabsTrigger value="returns">Returns ({returns?.length || 0})</TabsTrigger></TabsList>
+            <TabsContent value="refunds">
+              <SectionCard title="Shopify refunds">
+                {!refunds?.length ? <EmptyState title="No Shopify refunds" /> : <div className="-m-4 overflow-x-auto"><table className="w-full min-w-[920px] text-left"><thead className="border-b border-line bg-subtle/60 text-[11px] uppercase tracking-wide text-inkmed"><tr><th className="px-4 py-2.5">Refund</th><th className="px-3 py-2.5">Order</th><th className="px-3 py-2.5">Created</th><th className="px-3 py-2.5 text-right">Refunded</th><th className="px-3 py-2.5 text-right">Line adjustments</th><th className="px-3 py-2.5">Restock behavior</th><th className="px-3 py-2.5">Note</th></tr></thead><tbody className="divide-y divide-line">{refunds.map((refund) => {
+                  const restocks = [...new Set((refund.line_items || []).map((item) => statusLabel(item.restock_type)).filter(Boolean))];
+                  return <tr key={refund.shopify_id} className="align-top hover:bg-subtle/60" data-testid={`refund-row-${refund.id}`}><td className="tnum px-4 py-3 text-sm font-medium">{refund.id}</td><td className="px-3 py-3"><button onClick={() => navigate(`/orders/${refund.order_id}`)} className="tnum text-sm font-semibold text-brand hover:underline">{refund.order_number}</button></td><td className="tnum whitespace-nowrap px-3 py-3 text-sm">{fmtDateTime(refund.created_at)}</td><td className="tnum px-3 py-3 text-right text-sm font-semibold text-danger">{money(refund.total_refunded)}</td><td className="tnum px-3 py-3 text-right text-sm">{refund.line_items?.reduce((sum, item) => sum + Number(item.quantity || 0), 0) || 0}</td><td className="px-3 py-3 text-sm">{restocks.join(", ") || "—"}</td><td className="max-w-xs px-3 py-3 text-sm text-inkmed">{refund.note || "—"}</td></tr>;
+                })}</tbody></table></div>}
+              </SectionCard>
+            </TabsContent>
+            <TabsContent value="returns">
+              <SectionCard title="Shopify Return objects">
+                {!returns?.length ? <EmptyState title="No Shopify Return objects" description="Refunds can exist without a Shopify Return object; those remain visible in the Refunds tab." /> : <div className="-m-4 overflow-x-auto"><table className="w-full min-w-[760px] text-left"><thead className="border-b border-line bg-subtle/60 text-[11px] uppercase tracking-wide text-inkmed"><tr><th className="px-4 py-2.5">Return</th><th className="px-3 py-2.5">Order</th><th className="px-3 py-2.5">Created</th><th className="px-3 py-2.5 text-right">Quantity</th><th className="px-3 py-2.5">Status</th></tr></thead><tbody className="divide-y divide-line">{returns.map((record) => <tr key={record.shopify_id} className="hover:bg-subtle/60"><td className="px-4 py-3"><p className="text-sm font-semibold">{record.name}</p><p className="tnum text-xs text-inkmed">{record.id}</p></td><td className="px-3 py-3"><button onClick={() => navigate(`/orders/${record.order_id}`)} className="tnum text-sm font-semibold text-brand hover:underline">{record.order_number}</button></td><td className="tnum px-3 py-3 text-sm">{fmtDateTime(record.created_at)}</td><td className="tnum px-3 py-3 text-right text-sm font-semibold">{record.total_quantity}</td><td className="px-3 py-3"><StatusChip value={statusLabel(record.status)} /></td></tr>)}</tbody></table></div>}
+              </SectionCard>
+            </TabsContent>
+          </Tabs>
         )}
       </div>
     </div>

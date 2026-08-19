@@ -1,4 +1,5 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+.runtime-diagnostics
 
 # IDE and editors
 .idea/
@@ -87,3 +88,6 @@ android-sdk/
 credentials.json
 *.key
 .credentials
+
+# Local feature workspaces
+/Features/

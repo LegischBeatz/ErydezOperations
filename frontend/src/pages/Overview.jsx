@@ -2,163 +2,136 @@ import React from "react";
 import { useNavigate } from "react-router-dom";
 import useSWR from "swr";
 import { api } from "@/lib/api";
-import { fmtRel, fmtTime, fmtDateTime } from "@/lib/format";
-import { PageHeader, KpiCard, StatusChip, SectionCard, Severity, EmptyState, InlineAlert, SourceBadge } from "@/components/common";
-import { useT } from "@/lib/i18n";
+import { fmtDateTime, fmtRel } from "@/lib/format";
+import { money, statusLabel, customerName, itemSummary } from "@/lib/shopify";
+import { EmptyState, KpiCard, PageHeader, SectionCard, StatusChip } from "@/components/common";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ArrowRight, Zap } from "lucide-react";
+import { ArrowRight, Store } from "lucide-react";
 
-const BUCKET_FILTERS = { "0–7": "unfulfilled", "8–14": "over-8", "15–21": "over-14", "22–30": "over-14", "30+": "over-30" };
+function StatusBreakdown({ values = {}, onClick }) {
+  const total = Object.values(values).reduce((sum, value) => sum + value, 0) || 1;
+  return (
+    <div className="space-y-3">
+      {Object.entries(values)
+        .sort((a, b) => b[1] - a[1])
+        .map(([status, count]) => (
+          <button key={status} onClick={() => onClick?.(status)} className="group block w-full text-left">
+            <div className="mb-1 flex items-center justify-between gap-3">
+              <StatusChip value={statusLabel(status)} />
+              <span className="tnum text-sm font-semibold">{count}</span>
+            </div>
+            <div className="h-1.5 overflow-hidden rounded-full bg-subtle">
+              <div className="h-full rounded-full bg-brand/75 transition-colors group-hover:bg-brand" style={{ width: `${Math.max((count / total) * 100, 2)}%` }} />
+            </div>
+          </button>
+        ))}
+    </div>
+  );
+}
 
 export default function Overview() {
-  const { t } = useT();
   const navigate = useNavigate();
-  const { data, isLoading } = useSWR("overview", api.overview, { revalidateOnFocus: false });
+  const { data, isLoading, error } = useSWR("overview", api.overview, { revalidateOnFocus: false });
 
   if (isLoading || !data) {
     return (
       <div className="space-y-4 p-6" data-testid="overview-skeleton">
-        <Skeleton className="h-8 w-64" />
-        <div className="grid grid-cols-4 gap-4">{[...Array(4)].map((_, i) => <Skeleton key={i} className="h-24" />)}</div>
-        <Skeleton className="h-64" />
+        <Skeleton className="h-8 w-72" />
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">{[...Array(8)].map((_, index) => <Skeleton key={index} className="h-24" />)}</div>
+        <Skeleton className="h-72" />
       </div>
     );
   }
 
-  const anyDisconnected = data.integrations.some((i) => i.status === "Disconnected");
-  const maxBucket = Math.max(...Object.values(data.backlog_by_age), 1);
+  if (error) {
+    return <div className="p-6 text-sm text-danger">Unable to load the active Shopify snapshot.</div>;
+  }
 
   return (
     <div data-testid="overview-page">
-      {anyDisconnected && (
-        <div className="bg-danger px-6 py-2 text-sm font-medium text-white" role="alert" data-testid="critical-system-banner">
-          {t("A critical integration is disconnected. Affected counts may be incomplete.")}
-        </div>
-      )}
-      <PageHeader title={`${t("Good morning")}, ${data.greeting_name}`} freshness={`${t("Last complete sync")}: ${fmtTime(data.last_sync)} · ${t("Shopify synced 2 min ago")}`} />
+      <PageHeader
+        title="Shopify overview"
+        freshness={data.last_sync ? `Last complete synchronization ${fmtRel(data.last_sync)} · ${fmtDateTime(data.last_sync)}` : "No active Shopify snapshot"}
+        status={<span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-ok"><Store size={12} /> Shopify source of truth</span>}
+      />
       <div className="space-y-4 p-6">
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
-          <KpiCard label={t("Needs action")} value={data.cards.needs_action} toneName="danger" testId="card-needs-action" sub={t("Open work items")} onClick={() => navigate("/work?view=all-open")} />
-          <KpiCard label={t("Overdue > 14 business days")} value={data.cards.overdue_14} toneName="warn" testId="card-overdue" sub={t("Unfulfilled paid orders")} onClick={() => navigate("/orders?filter=over-14")} />
-          <KpiCard label={t("Awaiting reply")} value={data.cards.awaiting_reply} toneName="info" testId="card-awaiting-reply" sub={t("Customers waiting")} onClick={() => navigate("/inbox?filter=customer-waiting")} />
-          <KpiCard label={t("Failed automations")} value={data.cards.failed_automations} toneName={data.cards.failed_automations > 0 ? "danger" : "ok"} testId="card-failed-automations" sub={t("Require intervention")} onClick={() => navigate("/work?view=failed-automation")} />
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <KpiCard label="Orders" value={data.cards.orders} sub="All orders accessible to the app" onClick={() => navigate("/orders")} testId="card-orders" />
+          <KpiCard label="Current sales" value={money(data.cards.gross_sales, data.currency)} sub="Sum of current Shopify order totals" toneName="ok" onClick={() => navigate("/orders")} testId="card-sales" />
+          <KpiCard label="Unfulfilled" value={data.cards.unfulfilled} sub="Not fulfilled and not cancelled" toneName="warn" onClick={() => navigate("/orders?filter=unfulfilled")} testId="card-unfulfilled" />
+          <KpiCard label="Refunded" value={money(data.cards.refunded_total, data.currency)} sub={`${data.cards.refunded_orders} orders with refunds`} toneName="danger" onClick={() => navigate("/returns")} testId="card-refunds" />
+          <KpiCard label="Active products" value={data.cards.active_products} sub="Shopify product status: Active" onClick={() => navigate("/products?status=ACTIVE")} testId="card-products" />
+          <KpiCard label="Available inventory" value={data.cards.available_inventory} sub="Across all Shopify inventory items" toneName="info" onClick={() => navigate("/inventory")} testId="card-inventory" />
+          <KpiCard label="Low-stock variants" value={data.cards.low_stock_variants} sub="Tracked and ≤ 3 available" toneName={data.cards.low_stock_variants ? "warn" : "ok"} onClick={() => navigate("/inventory?low_stock=true")} testId="card-low-stock" />
+          <KpiCard label="Last sync" value={data.last_sync ? fmtRel(data.last_sync) : "—"} sub="Complete canonical snapshot" onClick={() => navigate("/settings/integrations")} testId="card-last-sync" />
         </div>
 
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          <SectionCard title={t("Priority work queue")} className="lg:col-span-2" testId="priority-queue-section"
-            action={<button onClick={() => navigate("/work")} className="flex items-center gap-1 text-xs font-medium text-brand hover:underline" data-testid="open-work-queue">{t("Open work queue")} <ArrowRight size={12} /></button>}>
-            {data.priority_queue.length === 0 ? (
-              <EmptyState title={t("No open work")} description={t("All exceptions are resolved. This is a genuine zero, not missing data.")} />
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+          <SectionCard
+            title="Recent Shopify orders"
+            className="xl:col-span-2"
+            action={<button onClick={() => navigate("/orders")} className="flex items-center gap-1 text-xs font-medium text-brand hover:underline">View all <ArrowRight size={12} /></button>}
+            testId="recent-orders"
+          >
+            {data.recent_orders.length === 0 ? (
+              <EmptyState title="No Shopify orders" description="The active snapshot contains no orders." />
             ) : (
-              <div className="-m-4 divide-y divide-line">
-                {data.priority_queue.map((w) => (
-                  <button key={w.id} data-testid="priority-queue-item"
-                    onClick={() => navigate(w.order_id ? `/orders/${w.order_id}` : "/work")}
-                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-subtle">
-                    <div className="w-20 shrink-0"><Severity value={w.severity} /></div>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-ink">{w.title}</p>
-                      <p className="truncate text-xs text-inkmed">{w.reason}</p>
-                    </div>
-                    <span className="hidden shrink-0 rounded-md bg-subtle px-2 py-1 text-xs font-medium text-inkmed md:block">{w.recommended_action}</span>
-                    <span className="tnum shrink-0 text-xs text-inkmed">{w.due ? fmtRel(w.due) : "—"}</span>
-                  </button>
-                ))}
+              <div className="-m-4 overflow-x-auto">
+                <table className="w-full min-w-[780px] text-left">
+                  <thead className="border-b border-line bg-subtle/60 text-[11px] uppercase tracking-wide text-inkmed">
+                    <tr><th className="px-4 py-2">Order</th><th className="px-3 py-2">Customer</th><th className="px-3 py-2">Items</th><th className="px-3 py-2 text-right">Total</th><th className="px-3 py-2">Payment</th><th className="px-3 py-2">Fulfillment</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-line">
+                    {data.recent_orders.map((order) => (
+                      <tr key={order.shopify_id} onClick={() => navigate(`/orders/${order.id}`)} className="cursor-pointer hover:bg-subtle/60" data-testid="recent-order-row">
+                        <td className="tnum px-4 py-2.5 text-sm font-semibold text-brand">{order.order_number}</td>
+                        <td className="px-3 py-2.5"><p className="text-sm font-medium">{customerName(order)}</p><p className="text-xs text-inkmed">{order.city || "Pickup / no shipping city"}</p></td>
+                        <td className="max-w-xs px-3 py-2.5"><p className="truncate text-sm">{itemSummary(order)}</p><p className="text-xs text-inkmed">{order.line_item_count} units</p></td>
+                        <td className="tnum px-3 py-2.5 text-right text-sm font-medium">{money(order.money?.current_total, order.currency)}</td>
+                        <td className="px-3 py-2.5"><StatusChip value={statusLabel(order.financial_status)} /></td>
+                        <td className="px-3 py-2.5"><StatusChip value={statusLabel(order.fulfillment_status)} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
           </SectionCard>
 
-          <SectionCard title={t("Today")} testId="today-panel">
-            {data.today.length === 0 ? (
-              <EmptyState title={t("Nothing scheduled today")} />
-            ) : (
-              <div className="space-y-2">
-                {data.today.map((a) => (
-                  <button key={a.id} onClick={() => navigate("/appointments")} data-testid="today-appointment"
-                    className="flex w-full items-start gap-3 rounded-md border border-line p-2.5 text-left transition-colors hover:bg-subtle">
-                    <span className="tnum mt-0.5 text-sm font-semibold text-brand">{fmtTime(a.time)}</span>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium">{a.type} — {a.customer}</p>
-                      <p className="truncate text-xs text-inkmed">{a.product} · {a.order_id}</p>
-                      {a.payment_due && <p className="text-xs font-medium text-warn">{a.payment_due}</p>}
-                    </div>
-                    <StatusChip value={a.readiness} />
-                  </button>
-                ))}
-              </div>
-            )}
+          <SectionCard title="Financial status" testId="financial-breakdown">
+            <StatusBreakdown values={data.financial_statuses} onClick={(status) => navigate(`/orders?financial_status=${status}`)} />
           </SectionCard>
 
-          <SectionCard title={t("Order backlog by business-day age")} className="lg:col-span-2" testId="backlog-chart">
-            <div className="flex items-end gap-4 px-2" style={{ height: 160 }}>
-              {Object.entries(data.backlog_by_age).map(([bucket, count]) => (
-                <button key={bucket} data-testid={`backlog-bucket-${bucket}`}
-                  onClick={() => navigate(`/orders?filter=${BUCKET_FILTERS[bucket]}`)}
-                  className="group flex flex-1 flex-col items-center justify-end gap-1 self-stretch" aria-label={`${count} orders aged ${bucket} business days`}>
-                  <span className="tnum text-sm font-semibold">{count}</span>
-                  <div className="w-full rounded-t-md bg-brand/80 transition-colors group-hover:bg-brand"
-                    style={{ height: `${Math.max((count / maxBucket) * 100, 4)}%` }} />
-                  <span className="text-xs text-inkmed">{bucket}</span>
-                </button>
-              ))}
-            </div>
-            <p className="mt-2 text-xs text-inkmed">{t("Business days since payment. Click a segment to open the filtered order list.")}</p>
+          <SectionCard title="Fulfillment status" testId="fulfillment-breakdown">
+            <StatusBreakdown values={data.fulfillment_statuses} onClick={(status) => navigate(`/orders?fulfillment_status=${status}`)} />
           </SectionCard>
 
-          <SectionCard title={t("Inventory risks")} testId="inventory-risks">
-            {data.inventory_risks.length === 0 ? (
-              <EmptyState title={t("No shortages detected")} />
-            ) : (
-              <div className="space-y-2">
-                {data.inventory_risks.slice(0, 5).map((i) => (
-                  <button key={i.sku} onClick={() => navigate(`/inventory?sku=${i.sku}`)} data-testid="inventory-risk-item"
-                    className="flex w-full items-center justify-between gap-2 rounded-md border border-line p-2.5 text-left transition-colors hover:bg-subtle">
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-medium">{i.product}</p>
-                      <p className="tnum text-xs text-inkmed">{t("ATP")} {i.atp} · {t("Inbound")} {i.inbound_qty || 0}</p>
-                    </div>
-                    <StatusChip value={i.risk} />
-                  </button>
-                ))}
-              </div>
-            )}
-          </SectionCard>
-
-          <SectionCard title={t("Recent automation activity")} className="lg:col-span-2" testId="automation-activity"
-            action={<button onClick={() => navigate("/automations?tab=approvals")} className="text-xs font-medium text-brand hover:underline" data-testid="pending-approvals-link">{data.automation_activity.pending_approvals} {t("pending approvals")}</button>}>
-            <div className="-m-4 divide-y divide-line">
-              {data.automation_activity.recent_runs.map((r) => (
-                <button key={r.id} onClick={() => navigate(`/automations/runs/${r.id}`)} data-testid="automation-run-row"
-                  className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-subtle">
-                  <Zap size={14} className="shrink-0 text-info" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium">{r.automation}</p>
-                    <p className="truncate text-xs text-inkmed">{r.trigger_event}</p>
+          <SectionCard title="Top products by order value" className="xl:col-span-2" testId="top-products">
+            {data.top_products.length === 0 ? <EmptyState title="No product sales" /> : (
+              <div className="divide-y divide-line">
+                {data.top_products.map((product, index) => (
+                  <div key={product.title} className="flex items-center gap-3 py-2 first:pt-0 last:pb-0">
+                    <span className="tnum flex h-6 w-6 items-center justify-center rounded-full bg-subtle text-xs font-semibold text-inkmed">{index + 1}</span>
+                    <p className="min-w-0 flex-1 truncate text-sm font-medium">{product.title}</p>
+                    <span className="tnum text-xs text-inkmed">{product.quantity} units</span>
+                    <span className="tnum w-28 text-right text-sm font-semibold">{money(product.sales, data.currency)}</span>
                   </div>
-                  <StatusChip value={r.result} />
-                  <span className="tnum shrink-0 text-xs text-inkmed">{fmtRel(r.ts)}</span>
-                </button>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </SectionCard>
 
-          <SectionCard title="Integration health" testId="integration-health-section">
-            <div className="space-y-2">
-              {data.integrations.map((i) => (
-                <div key={i.name} className="flex items-center justify-between gap-2" data-testid={`integration-${i.name.toLowerCase().replace(/\s+/g, "-")}`}>
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium">{i.name}</p>
-                    <p className="truncate text-xs text-inkmed">Last event {fmtRel(i.last_event)}</p>
-                  </div>
-                  <StatusChip value={i.status} />
-                </div>
-              ))}
-              {data.integrations.some((i) => i.status !== "Healthy") && (
-                <InlineAlert toneName="warn" testId="integration-warning">
-                  Counts on this page depending on delayed integrations may be incomplete — not a genuine zero.
-                </InlineAlert>
-              )}
-            </div>
+          <SectionCard title="Low-stock Shopify variants" testId="low-stock-list">
+            {data.low_stock.length === 0 ? <EmptyState title="No low-stock tracked variants" /> : (
+              <div className="space-y-2">
+                {data.low_stock.slice(0, 8).map((item) => (
+                  <button key={item.shopify_id} onClick={() => navigate(`/inventory?item=${encodeURIComponent(item.id)}`)} className="flex w-full items-center justify-between gap-3 rounded-md border border-line p-2.5 text-left hover:bg-subtle">
+                    <div className="min-w-0"><p className="truncate text-sm font-medium">{item.product_title}</p><p className="truncate text-xs text-inkmed">{item.sku || "No SKU"} · {item.variant_title}</p></div>
+                    <span className="tnum rounded-full bg-amber-50 px-2 py-0.5 text-xs font-semibold text-warn">{item.quantities?.available ?? 0} available</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </SectionCard>
         </div>
       </div>

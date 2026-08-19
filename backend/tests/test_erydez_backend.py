@@ -1,11 +1,9 @@
-"""E-RYDEZ Operations Console backend tests.
+"""End-to-end contracts for the Shopify-authoritative operations backend."""
 
-Covers all endpoints listed in the review request: overview, work-items,
-orders (list/detail/notes/pause), conversations, fulfillment (advance/scan),
-inventory, returns, appointments, automations, approvals, search, reports,
-integrations, notifications.
-"""
+from __future__ import annotations
+
 import os
+
 import pytest
 import requests
 
@@ -13,288 +11,128 @@ BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "http://localhost:8001").rstr
 API = f"{BASE_URL}/api"
 
 
-@pytest.fixture(scope="session", autouse=True)
-def reseed():
-    r = requests.post(f"{API}/reset", timeout=30)
-    assert r.status_code == 200
-    yield
-
-
 @pytest.fixture(scope="session")
-def s():
+def session() -> requests.Session:
     return requests.Session()
 
 
-# ---------------- Health ----------------
-def test_health_live(s):
-    r = s.get(f"{API}/health/live", timeout=10)
-    assert r.status_code == 200
-    assert r.json() == {"status": "live"}
+def test_health_and_source_contract(session):
+    assert session.get(f"{API}/health/live", timeout=10).json() == {"status": "live"}
+    ready = session.get(f"{API}/health/ready", timeout=10)
+    assert ready.status_code == 200
+    assert ready.json()["status"] == "ready"
+    assert ready.json()["shopify_snapshot_active"] is True
+    root = session.get(f"{API}/", timeout=10).json()
+    assert root["source"] == "shopify"
+    assert root["schema_version"] >= 2
 
 
-def test_health_ready(s):
-    r = s.get(f"{API}/health/ready", timeout=10)
-    assert r.status_code == 200
-    assert r.json() == {"status": "ready"}
+def test_shopify_status_has_valid_active_snapshot(session):
+    response = session.get(f"{API}/shopify/status", params={"live": "false"}, timeout=10)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["configured"] is True
+    assert data["active_snapshot"]["validation"]["valid"] is True
+    assert data["active_snapshot"]["active_sync_id"]
+    assert data["active_snapshot"]["counts"]["orders"] > 0
+    assert data["active_snapshot"]["counts"]["products"] > 0
 
 
-# ---------------- Overview ----------------
-def test_overview(s):
-    r = s.get(f"{API}/overview")
-    assert r.status_code == 200
-    d = r.json()
-    for k in ("needs_action", "overdue_14", "awaiting_reply", "failed_automations"):
-        assert k in d["cards"]
-    assert len(d["priority_queue"]) <= 8
-    assert set(d["backlog_by_age"].keys()) == {"0–7", "8–14", "15–21", "22–30", "30+"}
-    assert isinstance(d["today"], list)
-    assert isinstance(d["inventory_risks"], list)
-    assert isinstance(d["integrations"], list)
-    assert "recent_runs" in d["automation_activity"]
+def test_overview_is_derived_from_shopify_snapshot(session):
+    response = session.get(f"{API}/overview", timeout=20)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["source"] == "shopify"
+    assert data["currency"]
+    assert data["cards"]["orders"] > 0
+    assert data["cards"]["active_products"] > 0
+    assert isinstance(data["recent_orders"], list)
+    assert isinstance(data["top_products"], list)
+    assert set(data["financial_statuses"])
+    assert set(data["fulfillment_statuses"])
 
 
-# ---------------- Work items ----------------
-@pytest.mark.parametrize("view", [
-    "my-work", "critical", "due-today", "overdue-orders", "customer-waiting",
-    "awaiting-stock", "awaiting-approval", "failed-automation", "unassigned", "all-open",
-])
-def test_work_items_views(s, view):
-    r = s.get(f"{API}/work-items", params={"view": view})
-    assert r.status_code == 200, r.text
-    data = r.json()
-    assert "items" in data and "counts" in data
-    assert view in data["counts"]
+def test_orders_pagination_filters_search_and_detail(session):
+    response = session.get(f"{API}/orders", params={"page": 1, "page_size": 25}, timeout=20)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["page"] == 1
+    assert data["page_size"] == 25
+    assert data["total"] >= len(data["items"]) > 0
+    assert len(data["items"]) <= 25
+    order = data["items"][0]
+    for key in ("shopify_id", "order_number", "financial_status", "fulfillment_status", "money", "line_items"):
+        assert key in order
+    detail = session.get(f"{API}/orders/{order['id']}", timeout=20)
+    assert detail.status_code == 200
+    assert detail.json()["shopify_id"] == order["shopify_id"]
+    searched = session.get(f"{API}/orders", params={"q": order["order_number"], "page_size": 10}, timeout=20).json()
+    assert any(item["shopify_id"] == order["shopify_id"] for item in searched["items"])
+    filtered = session.get(f"{API}/orders", params={"financial_status": order["financial_status"], "page_size": 10}, timeout=20).json()
+    assert all(item["financial_status"] == order["financial_status"] for item in filtered["items"])
 
 
-def test_work_item_patch(s):
-    lst = s.get(f"{API}/work-items", params={"view": "all-open"}).json()["items"]
-    assert lst, "expected some open work items"
-    wid = lst[0]["id"]
-    r = s.patch(f"{API}/work-items/{wid}", json={"owner": "Pablo"})
-    assert r.status_code == 200
-    assert r.json()["owner"] == "Pablo"
-
-    r2 = s.patch(f"{API}/work-items/does-not-exist", json={"owner": "X"})
-    assert r2.status_code == 404
+def test_order_mutations_and_mock_reset_are_disabled(session):
+    order = session.get(f"{API}/orders", params={"page_size": 1}, timeout=20).json()["items"][0]
+    assert session.post(f"{API}/orders/{order['id']}/notes", json={"text": "must not persist"}, timeout=10).status_code == 409
+    assert session.post(f"{API}/orders/{order['id']}/pause-updates", json={"paused": True}, timeout=10).status_code == 409
+    assert session.post(f"{API}/reset", timeout=10).status_code == 410
 
 
-# ---------------- Orders ----------------
-@pytest.mark.parametrize("f", ["unfulfilled", "over-14", "pickup", "missing-tracking", "cancelled-refunded"])
-def test_orders_filters(s, f):
-    r = s.get(f"{API}/orders", params={"filter": f})
-    assert r.status_code == 200
-    assert isinstance(r.json(), list)
+def test_products_variants_and_inventory_are_linked(session):
+    products = session.get(f"{API}/products", timeout=20)
+    assert products.status_code == 200
+    records = products.json()
+    assert records
+    product = next((item for item in records if item["variant_count"] > 0), records[0])
+    detail = session.get(f"{API}/products/{product['id']}", timeout=20)
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["shopify_id"] == product["shopify_id"]
+    assert len(body["variants"]) == product["variant_count"]
+    assert all(item["shopify_product_id"] == product["shopify_id"] for item in body["variants"])
+    assert all(item["shopify_product_id"] == product["shopify_id"] for item in body["inventory"])
 
 
-def test_orders_search(s):
-    r = s.get(f"{API}/orders", params={"q": "weber"})
-    assert r.status_code == 200
+def test_inventory_pagination_quantity_states_and_detail(session):
+    response = session.get(f"{API}/inventory", params={"page": 1, "page_size": 25}, timeout=20)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] >= len(data["items"]) > 0
+    item = data["items"][0]
+    assert set((item["quantities"] or {}).keys()) == {"available", "committed", "incoming", "on_hand", "reserved"}
+    detail = session.get(f"{API}/inventory/{item['id']}", timeout=20)
+    assert detail.status_code == 200
+    assert detail.json()["shopify_id"] == item["shopify_id"]
+    assert "open_orders" in detail.json()
 
 
-def test_order_detail(s):
-    r = s.get(f"{API}/orders/E-1001")
-    assert r.status_code == 200
-    d = r.json()
-    assert d["id"] == "E-1001"
-    assert isinstance(d["business_day_age"], int)
-    for k in ("timeline", "work_items", "conversations", "returns", "appointments", "approvals"):
-        assert k in d
+def test_customers_pagination_and_linked_orders(session):
+    response = session.get(f"{API}/customers", params={"page": 1, "page_size": 25}, timeout=20)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] >= len(data["items"]) > 0
+    customer = next((item for item in data["items"] if item["number_of_orders"] > 0), data["items"][0])
+    detail = session.get(f"{API}/customers/{customer['id']}", timeout=20)
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["shopify_id"] == customer["shopify_id"]
+    assert all((order.get("customer") or {}).get("shopify_id") == customer["shopify_id"] for order in body["orders"])
 
 
-def test_order_not_found(s):
-    assert s.get(f"{API}/orders/E-9999").status_code == 404
-
-
-def test_add_note_and_pause(s):
-    r = s.post(f"{API}/orders/E-1001/notes", json={"text": "TEST_NOTE test"})
-    assert r.status_code == 200
-    assert r.json()["text"] == "TEST_NOTE test"
-
-    r = s.post(f"{API}/orders/E-1001/pause-updates", json={"paused": True, "reason": "Customer requested pause"})
-    assert r.status_code == 200
-    assert r.json()["updates_suppressed"] is True
-    assert r.json()["suppression_reason"] == "Customer requested pause"
-
-    r = s.post(f"{API}/orders/E-1001/pause-updates", json={"paused": False})
-    assert r.status_code == 200
-    assert r.json()["updates_suppressed"] is False
-
-
-# ---------------- Conversations ----------------
-@pytest.mark.parametrize("f", ["unread", "unlinked", "cancellation"])
-def test_conversations_filters(s, f):
-    r = s.get(f"{API}/conversations", params={"filter": f})
-    assert r.status_code == 200
-    assert isinstance(r.json(), list)
-
-
-def test_conversation_detail_and_send(s):
-    convs = s.get(f"{API}/conversations").json()
-    assert convs
-    linked = next((c for c in convs if c.get("order_id")), None)
-    assert linked
-    cid = linked["id"]
-    r = s.get(f"{API}/conversations/{cid}")
-    assert r.status_code == 200
-    d = r.json()
-    if d.get("order_id"):
-        assert "order" in d
-
-    r = s.post(f"{API}/conversations/{cid}/messages", json={"mode": "send", "body": "TEST message"})
-    assert r.status_code == 200
-    assert r.json()["delivery_state"] == "Sent"
-
-    r = s.patch(f"{API}/conversations/{cid}", json={"state": "Snoozed"})
-    assert r.status_code == 200
-
-
-# ---------------- Fulfillment ----------------
-def test_fulfillment_list(s):
-    r = s.get(f"{API}/fulfillment")
-    assert r.status_code == 200
-    d = r.json()
-    assert len(d["stages"]) == 8
-    assert "grouped" in d
-
-
-def test_fulfillment_scan_mismatch_and_match(s):
-    items = s.get(f"{API}/fulfillment").json()["items"]
-    target = next((f for f in items if f["stage"] in ("Allocated", "Picking", "Packed")), items[0])
-    r = s.post(f"{API}/fulfillment/{target['id']}/scan", json={"code": "WRONG-CODE-XYZ"})
-    assert r.status_code == 200
-    assert r.json()["match"] is False
-    assert r.json()["exception_created"] is True
-
-    r = s.post(f"{API}/fulfillment/{target['id']}/scan", json={"code": target["sku"]})
-    assert r.status_code == 200
-    assert r.json()["match"] is True
-
-
-def test_fulfillment_advance_requires_tracking(s):
-    items = s.get(f"{API}/fulfillment").json()["items"]
-    packed = next((f for f in items if f["stage"] == "Packed" and f["delivery_method"] == "Shipping" and not f.get("tracking")), None)
-    if not packed:
-        pytest.skip("no Packed shipping w/o tracking to test 422")
-    # Packed -> Carrier handoff (allowed without tracking)
-    r = s.post(f"{API}/fulfillment/{packed['id']}/advance", json={})
-    assert r.status_code == 200
-    # Carrier handoff -> Fulfilled requires tracking OR exception reason
-    r = s.post(f"{API}/fulfillment/{packed['id']}/advance", json={})
-    assert r.status_code == 422, f"expected 422 advancing to Fulfilled without tracking, got {r.status_code}"
-
-    r = s.post(f"{API}/fulfillment/{packed['id']}/advance", json={"tracking": "TEST-TRK-1", "exception_reason": "manual"})
-    assert r.status_code == 200
-
-
-# ---------------- Inventory ----------------
-def test_inventory(s):
-    r = s.get(f"{API}/inventory")
-    assert r.status_code == 200
-    lst = r.json()
-    for i in lst:
-        assert i["atp"] == i["on_hand"] - i["committed"]
-
-
-def test_inventory_sku(s):
-    r = s.get(f"{API}/inventory/VX2-PRO-GT")
-    assert r.status_code == 200
-    d = r.json()
-    assert "waiting_orders" in d and "inbound_pos" in d
-    ages = [o["business_day_age"] for o in d["waiting_orders"]]
-    assert ages == sorted(ages, reverse=True)
-
-
-# ---------------- Returns ----------------
-def test_returns(s):
-    r = s.get(f"{API}/returns")
-    assert r.status_code == 200
-    r = s.get(f"{API}/returns/RMA-2031")
-    assert r.status_code == 200
-    d = r.json()
-    prev_events = len(d.get("timeline", []))
-    r = s.patch(f"{API}/returns/RMA-2031", json={"state": "In inspection"})
-    assert r.status_code == 200
-    assert len(r.json()["timeline"]) == prev_events + 1
-
-
-# ---------------- Appointments ----------------
-def test_appointments(s):
-    r = s.get(f"{API}/appointments")
-    assert r.status_code == 200
-    lst = r.json()
-    assert lst
-    aid = lst[0]["id"]
-    r = s.patch(f"{API}/appointments/{aid}", json={"status": "Checked in"})
-    assert r.status_code == 200
-    assert r.json()["status"] == "Checked in"
-
-
-# ---------------- Automations ----------------
-def test_automations(s):
-    r = s.get(f"{API}/automations")
-    assert r.status_code == 200
-    lst = r.json()
-    if lst:
-        aid = lst[0]["id"]
-        r = s.patch(f"{API}/automations/{aid}", json={"status": "Paused"})
-        assert r.status_code == 200
-        assert r.json()["status"] == "Paused"
-    runs = s.get(f"{API}/automations/runs").json()
-    assert runs
-    r = s.get(f"{API}/automations/runs/{runs[0]['id']}")
-    assert r.status_code == 200
-
-
-# ---------------- Approvals ----------------
-def test_approvals_flow(s):
-    approvals = s.get(f"{API}/approvals").json()
-    pending = [a for a in approvals if a["state"] == "Pending"]
-    assert len(pending) >= 2
-
-    a1 = pending[0]["id"]
-    # reject without reason -> 422
-    r = s.post(f"{API}/approvals/{a1}/decision", json={"decision": "reject"})
-    assert r.status_code == 422
-    r = s.post(f"{API}/approvals/{a1}/decision", json={"decision": "reject", "reason": "Not policy compliant"})
-    assert r.status_code == 200
-    # already decided -> 400
-    r = s.post(f"{API}/approvals/{a1}/decision", json={"decision": "approve"})
-    assert r.status_code == 400
-
-    a2 = pending[1]["id"]
-    r = s.post(f"{API}/approvals/{a2}/decision", json={"decision": "approve"})
-    assert r.status_code == 200
-    assert r.json()["state"] == "Approved"
-
-
-# ---------------- Search / reports / misc ----------------
-def test_search(s):
-    r = s.get(f"{API}/search", params={"q": "weber"})
-    assert r.status_code == 200
-    assert isinstance(r.json()["orders"], list)
-
-    r = s.get(f"{API}/search", params={"q": "RMA-2031"})
-    assert r.status_code == 200
-    assert any(rr["id"] == "RMA-2031" for rr in r.json()["returns"])
-
-    r = s.get(f"{API}/search", params={"q": "VX2"})
-    assert r.status_code == 200
-    assert r.json()["inventory"]
-
-
-def test_reports(s):
-    r = s.get(f"{API}/reports")
-    assert r.status_code == 200
-    d = r.json()
-    assert "backlog_by_age" in d
-    assert "tracking_coverage" in d
-    assert "automation" in d
-
-
-def test_integrations_and_notifications(s):
-    r = s.get(f"{API}/integrations")
-    assert r.status_code == 200 and isinstance(r.json(), list)
-    ns = s.get(f"{API}/notifications").json()
-    if ns:
-        r = s.patch(f"{API}/notifications/{ns[0]['id']}")
-        assert r.status_code == 200
+def test_fulfillment_refund_return_and_search_contracts(session):
+    fulfillments = session.get(f"{API}/fulfillments", timeout=20)
+    refunds = session.get(f"{API}/refunds", timeout=20)
+    returns = session.get(f"{API}/returns", timeout=20)
+    assert fulfillments.status_code == refunds.status_code == returns.status_code == 200
+    assert isinstance(fulfillments.json(), list)
+    assert isinstance(refunds.json(), list)
+    assert isinstance(returns.json(), list)
+    if fulfillments.json():
+        assert fulfillments.json()[0]["shopify_order_id"]
+    if refunds.json():
+        assert refunds.json()[0]["shopify_order_id"]
+    first_order = session.get(f"{API}/orders", params={"page_size": 1}, timeout=20).json()["items"][0]
+    result = session.get(f"{API}/search", params={"q": first_order["order_number"]}, timeout=20)
+    assert result.status_code == 200
+    assert any(item["shopify_id"] == first_order["shopify_id"] for item in result.json()["orders"])

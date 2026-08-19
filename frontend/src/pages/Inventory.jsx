@@ -1,112 +1,71 @@
 import React from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import useSWR from "swr";
 import { api } from "@/lib/api";
-import { fmtDate, fmtDateTime } from "@/lib/format";
-import { PageHeader, StatusChip, EmptyState, FactList, InlineAlert } from "@/components/common";
-import { useT } from "@/lib/i18n";
-import { Skeleton } from "@/components/ui/skeleton";
+import { fmtDateTime } from "@/lib/format";
+import { customerName, money } from "@/lib/shopify";
+import { EmptyState, FactList, PageHeader, StatusChip } from "@/components/common";
+import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 
-const COLS = ["Product", "SKU", "On hand", "Committed", "ATP", "Awaiting allocation", "Inbound (ETA)", "Oldest waiting order", "Reorder point", "Risk", "Recommendation"];
+const QUANTITIES = ["available", "on_hand", "committed", "reserved", "incoming"];
 
 export default function Inventory() {
-  const { t } = useT();
-  const [params, setParams] = useSearchParams();
-  const sku = params.get("sku");
   const navigate = useNavigate();
-  const { data: items, isLoading } = useSWR("inventory", api.inventory);
-  const { data: detail } = useSWR(sku ? ["inventory", sku] : null, () => api.inventoryItem(sku));
+  const [params, setParams] = useSearchParams();
+  const selected = params.get("item");
+  const q = params.get("q") || "";
+  const lowStock = params.get("low_stock") === "true";
+  const page = Math.max(Number(params.get("page") || 1), 1);
+  const query = { q: q || undefined, low_stock: lowStock || undefined, page, page_size: 100 };
+  const { data, isLoading, error } = useSWR(["inventory", query], () => api.inventory(query), { keepPreviousData: true });
+  const { data: detail } = useSWR(selected ? ["inventory-item", selected] : null, () => api.inventoryItem(selected));
+
+  const update = (values) => {
+    const next = new URLSearchParams(params);
+    Object.entries(values).forEach(([key, value]) => value ? next.set(key, value) : next.delete(key));
+    if (!("page" in values)) next.delete("page");
+    setParams(next);
+  };
 
   return (
     <div data-testid="inventory-page">
-      <PageHeader title={t("Inventory")} freshness={t("Available to promise = On hand − Committed − Quality hold · Projected = ATP + Confirmed inbound")} />
+      <PageHeader title="Inventory" freshness={data ? `${data.total} Shopify inventory items · quantities are location-aware` : "Loading Shopify inventory…"}>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <div className="relative min-w-[280px] flex-1 md:max-w-md"><Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-inkmed" /><Input value={q} onChange={(event) => update({ q: event.target.value })} placeholder="Product, variant or SKU…" className="h-9 pl-9" /></div>
+          <label className="flex h-9 items-center gap-2 rounded-md border border-line bg-surface px-3 text-sm"><input type="checkbox" checked={lowStock} onChange={(event) => update({ low_stock: event.target.checked ? "true" : "" })} /> Tracked with ≤ 3 available</label>
+        </div>
+      </PageHeader>
+
       <div className="p-6">
-        {isLoading ? (
-          <div className="space-y-2">{[...Array(6)].map((_, i) => <Skeleton key={i} className="h-12" />)}</div>
-        ) : (
-          <div className="overflow-x-auto rounded-lg border border-line bg-surface">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-line text-left text-xs font-semibold text-inkmed">
-                  {COLS.map((h) => (
-                    <th key={h} className="whitespace-nowrap px-3 py-2.5">{t(h)}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {items?.map((i) => (
-                  <tr key={i.sku} onClick={() => setParams({ sku: i.sku })} data-testid={`inventory-row-${i.sku}`}
-                    className="h-[52px] cursor-pointer border-b border-line last:border-0 transition-colors hover:bg-subtle">
-                    <td className="px-3"><p className="font-medium">{i.product}</p><p className="text-xs text-inkmed">{i.variant}</p></td>
-                    <td className="tnum px-3 text-xs">{i.sku}</td>
-                    <td className="tnum px-3">{i.on_hand}</td>
-                    <td className="tnum px-3">{i.committed}</td>
-                    <td className={cn("tnum px-3 font-semibold", i.atp < 0 ? "text-danger" : i.atp === 0 ? "text-warn" : "text-ok")}>{i.atp}</td>
-                    <td className="tnum px-3">{i.awaiting_allocation}</td>
-                    <td className="tnum px-3 text-xs">
-                      {i.inbound_qty ? <>{i.inbound_qty} · {fmtDate(i.inbound_eta)} <span className={i.inbound_confidence === "Confirmed" ? "text-ok" : "text-warn"}>({t(i.inbound_confidence)})</span></> : "—"}
-                    </td>
-                    <td className="tnum px-3 text-xs">{i.oldest_waiting_order || "—"}</td>
-                    <td className="tnum px-3">{i.reorder_point}</td>
-                    <td className="px-3"><StatusChip value={i.risk} /></td>
-                    <td className="max-w-56 truncate px-3 text-xs text-inkmed">{i.recommendation}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        {isLoading && !data ? <Skeleton className="h-[520px] w-full" /> : error ? <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-danger">Unable to load Shopify inventory.</div> : !data?.items?.length ? <EmptyState title="No matching Shopify inventory items" /> : (
+          <div className="overflow-hidden rounded-lg border border-line bg-surface">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[1080px] text-left">
+                <thead className="border-b border-line bg-subtle/70 text-[11px] uppercase tracking-wide text-inkmed"><tr><th className="px-4 py-2.5">Product / variant</th><th className="px-3 py-2.5">SKU</th><th className="px-3 py-2.5">Tracking</th>{QUANTITIES.map((name) => <th key={name} className="px-3 py-2.5 text-right">{name.replace("_", " ")}</th>)}<th className="px-3 py-2.5">Locations</th></tr></thead>
+                <tbody className="divide-y divide-line">{data.items.map((item) => {
+                  const available = Number(item.quantities?.available || 0);
+                  const tone = !item.tracked ? "neut" : available <= 0 ? "danger" : available <= 3 ? "warn" : "ok";
+                  return <tr key={item.shopify_id} onClick={() => update({ item: item.id })} className="cursor-pointer hover:bg-subtle/60" data-testid={`inventory-row-${item.id}`}><td className="px-4 py-3"><p className="max-w-sm truncate text-sm font-semibold">{item.product_title || "Unknown product"}</p><p className="truncate text-xs text-inkmed">{item.variant_title || "Default variant"}</p></td><td className="tnum px-3 py-3 text-sm">{item.sku || "—"}</td><td className="px-3 py-3"><StatusChip value={item.tracked ? "Tracked" : "Not tracked"} toneOverride={tone} /></td>{QUANTITIES.map((name) => <td key={name} className={`tnum px-3 py-3 text-right text-sm font-semibold ${name === "available" && tone === "danger" ? "text-danger" : name === "available" && tone === "warn" ? "text-warn" : ""}`}>{item.quantities?.[name] ?? 0}</td>)}<td className="px-3 py-3 text-sm">{item.locations?.map((location) => location.name).filter(Boolean).join(", ") || "—"}</td></tr>;
+                })}</tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-between border-t border-line px-4 py-3"><p className="text-xs text-inkmed">Showing {(data.page - 1) * data.page_size + 1}–{Math.min(data.page * data.page_size, data.total)} of {data.total}</p><div className="flex items-center gap-2"><button disabled={page <= 1} onClick={() => update({ page: String(page - 1) })} className="flex h-8 items-center gap-1 rounded-md border border-line px-2.5 text-xs disabled:opacity-40"><ChevronLeft size={14} /> Previous</button><span className="tnum text-xs text-inkmed">{data.page} / {data.pages}</span><button disabled={page >= data.pages} onClick={() => update({ page: String(page + 1) })} className="flex h-8 items-center gap-1 rounded-md border border-line px-2.5 text-xs disabled:opacity-40">Next <ChevronRight size={14} /></button></div></div>
           </div>
         )}
       </div>
 
-      <Sheet open={!!sku} onOpenChange={(o) => !o && setParams({})}>
-        <SheetContent className="w-[480px] overflow-y-auto sm:max-w-[480px]" data-testid="inventory-detail-drawer">
-          {detail && (
-            <>
-              <SheetHeader>
-                <SheetTitle className="text-left">{detail.product} <span className="tnum text-sm font-normal text-inkmed">{detail.sku}</span></SheetTitle>
-              </SheetHeader>
-              <div className="mt-4 space-y-4">
-                <div className="rounded-md border border-line bg-subtle p-3">
-                  <FactList facts={[
-                    [t("On hand"), detail.on_hand], [t("Committed to paid orders"), detail.committed],
-                    [t("Quality hold"), detail.quality_hold], [t("Available to promise"), detail.atp],
-                    [t("Confirmed inbound"), detail.inbound_qty || 0], [t("Projected available"), detail.projected_available],
-                    [t("Sales velocity"), `${detail.velocity_per_week} ${t("/ week")}`],
-                  ]} />
-                </div>
-                <div>
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-inkmed">{t("Waiting-order queue (allocation rule: oldest paid first)")}</p>
-                  {detail.waiting_orders?.length ? detail.waiting_orders.map((o) => (
-                    <button key={o.id} onClick={() => navigate(`/orders/${o.id}`)} data-testid="waiting-order-row"
-                      className="flex w-full items-center justify-between border-b border-line py-2 text-left text-sm last:border-0 hover:text-brand">
-                      <span className="tnum font-medium">{o.id} · {o.customer.name}</span>
-                      <span className="tnum text-xs text-inkmed">{o.business_day_age} {t("business days")}</span>
-                    </button>
-                  )) : <EmptyState title={t("No waiting orders")} />}
-                </div>
-                <div>
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-inkmed">{t("Inbound purchase orders")}</p>
-                  {detail.inbound_pos?.length ? detail.inbound_pos.map((po) => (
-                    <div key={po.id} className="rounded-md border border-line p-2.5 text-sm" data-testid="inbound-po">
-                      <p className="tnum font-medium">{po.id} · {po.supplier}</p>
-                      <p className="text-xs text-inkmed">{po.items} · {po.state}{po.eta ? ` · ${t("ETA")} ${fmtDate(po.eta)} (${t(po.eta_confidence)})` : ""}</p>
-                    </div>
-                  )) : <p className="text-xs text-inkmed">{t("No inbound purchase orders.")}</p>}
-                </div>
-                <InlineAlert toneName="info" testId="reorder-recommendation">
-                  <span className="font-semibold">{t("Reorder recommendation:")}</span> {detail.recommendation}.
-                </InlineAlert>
-                <div>
-                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-inkmed">{t("Inventory events")}</p>
-                  {detail.events.map((e) => (
-                    <p key={e.id} className="border-b border-line py-1.5 text-xs last:border-0"><span className="tnum text-inkmed">{fmtDateTime(e.ts)}</span> · {e.summary} · {e.actor}</p>
-                  ))}
-                </div>
-              </div>
-            </>
-          )}
+      <Sheet open={!!selected} onOpenChange={(open) => !open && update({ item: "" })}>
+        <SheetContent className="w-[540px] overflow-y-auto sm:max-w-[540px]" data-testid="inventory-detail-drawer">
+          {detail && <><SheetHeader><SheetTitle className="text-left">{detail.product_title} <span className="tnum ml-1 text-sm font-normal text-inkmed">{detail.sku || "No SKU"}</span></SheetTitle></SheetHeader><div className="mt-4 space-y-4">
+            <div className="rounded-md border border-line bg-subtle p-3"><FactList facts={[["Variant", detail.variant_title || "Default"], ["Tracked", detail.tracked ? "Yes" : "No"], ["Requires shipping", detail.requires_shipping ? "Yes" : "No"], ["Duplicate SKU count", detail.duplicate_sku_count], ["Unit cost", detail.unit_cost ? money(detail.unit_cost) : "Unavailable"], ["Updated in Shopify", fmtDateTime(detail.updated_at)]]} /></div>
+            <div><p className="mb-2 text-xs font-semibold uppercase tracking-wide text-inkmed">Shopify quantity states</p><div className="grid grid-cols-5 gap-2">{QUANTITIES.map((name) => <div key={name} className="rounded-md border border-line p-2 text-center"><p className="tnum text-lg font-semibold">{detail.quantities?.[name] ?? 0}</p><p className="text-[10px] uppercase tracking-wide text-inkmed">{name.replace("_", " ")}</p></div>)}</div></div>
+            <div><p className="mb-2 text-xs font-semibold uppercase tracking-wide text-inkmed">Locations</p>{detail.locations?.length ? detail.locations.map((location) => <div key={location.inventory_level_id} className="mb-2 rounded-md border border-line p-3 last:mb-0"><div className="flex items-center justify-between"><p className="text-sm font-semibold">{location.name}</p><StatusChip value={location.active ? "Active" : "Inactive"} /></div><div className="mt-2 grid grid-cols-5 gap-2">{QUANTITIES.map((name) => <div key={name}><p className="tnum text-sm font-semibold">{location.quantities?.[name] ?? 0}</p><p className="text-[10px] text-inkmed">{name}</p></div>)}</div></div>) : <p className="text-sm text-inkmed">No Shopify inventory levels.</p>}</div>
+            <div><p className="mb-2 text-xs font-semibold uppercase tracking-wide text-inkmed">Open orders using this variant</p>{detail.open_orders?.length ? detail.open_orders.map((order) => <button key={order.shopify_id} onClick={() => navigate(`/orders/${order.id}`)} className="flex w-full items-center justify-between border-b border-line py-2 text-left last:border-0 hover:text-brand"><span className="tnum text-sm font-medium">{order.order_number} · {customerName(order)}</span><StatusChip value={order.fulfillment_status || "Unfulfilled"} /></button>) : <EmptyState title="No open orders linked" />}</div>
+            {detail.product_id && <Link to={`/products/${detail.product_id}`} className="block h-9 rounded-md border border-line pt-2 text-center text-sm font-medium hover:bg-subtle">Open product and variants</Link>}
+          </div></>}
         </SheetContent>
       </Sheet>
     </div>
