@@ -145,6 +145,105 @@ def test_normalize_thread_collects_attachments():
     assert result["messages"][0]["attachments"] == [{"filename": "invoice.pdf", "mimeType": "application/pdf"}]
 
 
+def test_normalize_thread_preserves_safe_html_and_removes_unsafe_markup():
+    message = raw_message(body="Hello customer")
+    plain = base64.urlsafe_b64encode(b"Hello customer").decode("ascii")
+    html_body = (
+        b'<div style="color: #145CFF"><strong>Hello customer</strong><br>'
+        b'<a href="https://example.com">Order details</a>'
+        b'<img src="https://example.com/image.png" alt="Product image" onerror="alert(1)">'
+        b'<script>alert(1)</script><a href="javascript:alert(1)">unsafe</a></div>'
+    )
+    html_encoded = base64.urlsafe_b64encode(html_body).decode("ascii")
+    message["payload"] = {
+        "mimeType": "multipart/alternative",
+        "headers": message["payload"]["headers"],
+        "parts": [
+            {"mimeType": "text/plain", "body": {"data": plain}},
+            {"mimeType": "text/html", "body": {"data": html_encoded}},
+        ],
+    }
+
+    result = normalize_thread_for_api({"id": "thread-1", "messages": [message]}, "info.erydez@gmail.com")
+    normalized = result["messages"][0]
+
+    assert normalized["body"] == "Hello customer"
+    assert '<strong>Hello customer</strong>' in normalized["htmlBody"]
+    assert 'href="https://example.com"' in normalized["htmlBody"]
+    assert 'target="_blank"' in normalized["htmlBody"]
+    assert 'src="https://example.com/image.png"' in normalized["htmlBody"]
+    assert "onerror" not in normalized["htmlBody"]
+    assert "script" not in normalized["htmlBody"]
+    assert "alert(1)" not in normalized["htmlBody"]
+    assert "javascript:" not in normalized["htmlBody"]
+
+
+def test_normalize_thread_handles_nested_rich_html_inline_images_and_attachment_variety():
+    message = raw_message(body="Plain-text invoice fallback")
+    plain = base64.urlsafe_b64encode(b"Plain-text invoice fallback").decode("ascii")
+    rich_html = """<div style=\"font-family:Arial; color:#17202A; background-image:url(https://tracker.example/pixel)\">
+      <h2>Rechnung &amp; Lieferstatus</h2>
+      <p>Guten Tag <strong>Frau Stein</strong>, Ihre Bestellung enthalt <em>mehrere Positionen</em>.</p>
+      <table width=\"100%\" style=\"border-collapse:collapse; width:100%\"><thead><tr><th>Artikel</th><th>Menge</th><th>Preis</th></tr></thead>
+      <tbody><tr><td>City-Scooter</td><td>1</td><td>CHF 899.00</td></tr><tr><td colspan=\"2\">Rabatt</td><td>- CHF 50.00</td></tr></tbody></table>
+      <ul><li>Lieferadresse verifiziert</li><li>Sendung wird vorbereitet</li></ul>
+      <blockquote>Am 18.08.2026 schrieb E-RYDEZ Team: Ihre Bestellung wird gepruft.</blockquote>
+      <pre>Bestellung: ERY-10482\nReferenz: 2026-08-19</pre>
+      <p><a href=\"mailto:service@example.ch\">Service kontaktieren</a> · <a href=\"tel:+41440000000\">Telefon</a></p>
+      <img src=\"data:image/png;base64,aGVsbG8=\" alt=\"Produktvorschau\" width=\"640\" height=\"320\">
+      <img src=\"cid:inline-tracking-image\" alt=\"Inline-Grafik\">
+      <svg><script>alert('blocked')</script><text>nicht anzeigen</text></svg>
+      <iframe src=\"https://untrusted.example\">nicht anzeigen</iframe><style>body { display:none; }</style>
+    </div>""".encode("utf-8")
+    encoded_html = base64.urlsafe_b64encode(rich_html).decode("ascii")
+    message["payload"] = {
+        "mimeType": "multipart/mixed",
+        "headers": message["payload"]["headers"],
+        "parts": [
+            {
+                "mimeType": "multipart/alternative",
+                "parts": [
+                    {"mimeType": "text/plain", "body": {"data": plain}},
+                    {"mimeType": "text/html", "body": {"data": encoded_html}},
+                ],
+            },
+            {"mimeType": "application/pdf", "filename": "rechnung-ERY-10482.pdf", "body": {"attachmentId": "attachment-pdf"}},
+            {
+                "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "filename": "artikeluebersicht.xlsx",
+                "body": {"attachmentId": "attachment-xlsx"},
+            },
+            {"mimeType": "image/png", "filename": "tracking-vorschau.png", "body": {"attachmentId": "attachment-inline"}},
+            {"mimeType": "application/zip", "filename": "lieferdokumente.zip", "body": {"attachmentId": "attachment-zip"}},
+        ],
+    }
+
+    result = normalize_thread_for_api({"id": "thread-rich", "messages": [message]}, "info.erydez@gmail.com")
+    normalized = result["messages"][0]
+    html_body = normalized["htmlBody"]
+
+    assert normalized["body"] == "Plain-text invoice fallback"
+    assert "<table" in html_body and "<th>Artikel</th>" in html_body and 'colspan="2"' in html_body
+    assert "<ul><li>Lieferadresse verifiziert</li>" in html_body
+    assert "<blockquote>Am 18.08.2026" in html_body
+    assert "<pre>Bestellung: ERY-10482" in html_body
+    assert 'href="mailto:service@example.ch"' in html_body
+    assert 'src="data:image/png;base64,aGVsbG8="' in html_body
+    assert 'alt="Produktvorschau"' in html_body
+    assert "background-image" not in html_body
+    assert "cid:inline-tracking-image" not in html_body
+    assert "tel:+41440000000" not in html_body
+    assert "iframe" not in html_body and "script" not in html_body and "svg" not in html_body
+    assert "alert('blocked')" not in html_body and "nicht anzeigen" not in html_body
+    assert normalized["attachments"] == [
+        {"filename": "rechnung-ERY-10482.pdf", "mimeType": "application/pdf"},
+        {"filename": "artikeluebersicht.xlsx", "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+        {"filename": "tracking-vorschau.png", "mimeType": "image/png"},
+        {"filename": "lieferdokumente.zip", "mimeType": "application/zip"},
+    ]
+    assert result["hasAttachments"] is True
+
+
 def test_detect_german_french_and_english():
     assert _detect_language({"body": "Guten Tag, wann wird meine Bestellung geliefert? Freundliche Grüsse"}) == "Deutsch"
     assert _detect_language({"body": "Bonjour, merci pour votre commande. Cordialement."}) == "Französisch"

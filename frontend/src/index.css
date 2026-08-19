@@ -95,3 +95,97 @@ code {
         border-bottom-color: inherit;
     }
 }
+
+@layer components {
+    .gmail-rich-content {
+        overflow-wrap: anywhere;
+        color: #17202A;
+        font-size: 0.875rem;
+        line-height: 1.65;
+    }
+
+    .gmail-rich-content > :first-child {
+        margin-top: 0;
+    }
+
+    .gmail-rich-content > :last-child {
+        margin-bottom: 0;
+    }
+
+    .gmail-rich-content p,
+    .gmail-rich-content div,
+    .gmail-rich-content ul,
+    .gmail-rich-content ol,
+    .gmail-rich-content pre,
+    .gmail-rich-content table,
+    .gmail-rich-content blockquote {
+        margin-top: 0;
+        margin-bottom: 1rem;
+    }
+
+    .gmail-rich-content ul,
+    .gmail-rich-content ol {
+        padding-left: 1.5rem;
+    }
+
+    .gmail-rich-content ul {
+        list-style: disc;
+    }
+
+    .gmail-rich-content ol {
+        list-style: decimal;
+    }
+
+    .gmail-rich-content a {
+        color: #175CD3;
+        font-weight: 500;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+    }
+
+    .gmail-rich-content img {
+        display: block;
+        max-width: 100%;
+        height: auto;
+        margin: 0.75rem 0;
+        border: 1px solid #D8E0E8;
+        border-radius: 6px;
+    }
+
+    .gmail-rich-content blockquote {
+        border-left: 3px solid #D8E0E8;
+        padding-left: 0.875rem;
+        color: #52606D;
+    }
+
+    .gmail-rich-content pre,
+    .gmail-rich-content code {
+        font-family: 'JetBrains Mono', Menlo, Monaco, Consolas, monospace;
+        font-size: 0.8125rem;
+    }
+
+    .gmail-rich-content pre {
+        max-width: 100%;
+        overflow-x: auto;
+        border: 1px solid #D8E0E8;
+        border-radius: 6px;
+        background: #EEF2F6;
+        padding: 0.75rem;
+        white-space: pre-wrap;
+    }
+
+    .gmail-rich-content table {
+        display: block;
+        max-width: 100%;
+        overflow-x: auto;
+        border-collapse: collapse;
+    }
+
+    .gmail-rich-content td,
+    .gmail-rich-content th {
+        border: 1px solid #D8E0E8;
+        padding: 0.5rem;
+        text-align: left;
+        vertical-align: top;
+    }
+}

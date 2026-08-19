@@ -24,6 +24,7 @@ import {
   Search,
   Settings,
   ShoppingBag,
+  X,
   Store,
   Users,
 } from "lucide-react";
@@ -150,7 +151,7 @@ function SearchRow({ primary, secondary, onClick }) {
 function LanguageSwitch() {
   const { locale, setLocale } = useT();
   return (
-    <div className="flex overflow-hidden rounded-md border border-line bg-surface" role="group" aria-label="Language">
+    <div className="hidden overflow-hidden rounded-md border border-line bg-surface sm:flex" role="group" aria-label="Language">
       {["de", "en"].map((language) => (
         <button
           key={language}
@@ -170,7 +171,8 @@ function LanguageSwitch() {
 
 export default function AppShell() {
   const { t } = useT();
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => window.innerWidth < 1024);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const { data: status, mutate: mutateStatus } = useSWR("shopify-status", () => api.shopifyStatus(false), { refreshInterval: 30000 });
@@ -207,13 +209,25 @@ export default function AppShell() {
 
   const health = status?.status || (status?.configured ? "Configured" : "Disconnected");
   const lastSync = status?.active_snapshot?.last_synced_at;
+  const sidebarCompact = collapsed && !mobileNavOpen;
+  const toggleNavigation = () => {
+    if (window.innerWidth < 768) {
+      setMobileNavOpen((open) => !open);
+      return;
+    }
+    setCollapsed((value) => !value);
+  };
 
   return (
     <div className="flex min-h-screen bg-canvas text-ink">
-      <aside className={cn("fixed inset-y-0 left-0 z-40 flex flex-col border-r border-line bg-surface transition-[width] duration-200", collapsed ? "w-[72px]" : "w-[240px]")} data-testid="app-sidebar">
+      <aside className={cn(
+        "fixed inset-y-0 left-0 z-40 flex flex-col border-r border-line bg-surface transition-[transform,width] duration-200 max-md:w-[240px] max-md:shadow-xl",
+        sidebarCompact ? "w-[72px]" : "w-[240px]",
+        mobileNavOpen ? "max-md:translate-x-0" : "max-md:-translate-x-full"
+      )} data-testid="app-sidebar">
         <div className="flex h-14 items-center gap-2 border-b border-line px-4">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-brand text-sm font-bold text-white">E</div>
-          {!collapsed && (
+          {!sidebarCompact && (
             <div>
               <p className="text-sm font-semibold tracking-tight">E-RYDEZ Console</p>
               <p className="text-[10px] text-inkmed">Shopify operations</p>
@@ -229,36 +243,38 @@ export default function AppShell() {
               className={({ isActive }) => cn(
                 "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors duration-150",
                 isActive ? "bg-brand/10 text-brand" : "text-inkmed hover:bg-subtle hover:text-ink",
-                collapsed && "justify-center px-0"
+                sidebarCompact && "justify-center px-0"
               )}
             >
               <Icon size={18} strokeWidth={2} />
-              {!collapsed && t(key)}
+              {!sidebarCompact && t(key)}
             </NavLink>
           ))}
         </nav>
-        {!collapsed && (
+        {!sidebarCompact && (
           <div className="border-t border-line p-3 text-[11px] text-inkmed">
             <div className="flex items-center gap-1.5"><Store size={12} /> Shopify is the source of truth</div>
             <p className="mt-1 truncate">{status?.store_domain || "Not configured"}</p>
           </div>
         )}
       </aside>
+      {mobileNavOpen && <button type="button" aria-label="Close mobile navigation" onClick={() => setMobileNavOpen(false)} className="fixed inset-0 z-30 bg-ink/25 md:hidden" data-testid="mobile-nav-backdrop" />}
 
-      <div className={cn("flex min-w-0 flex-1 flex-col transition-[margin] duration-200", collapsed ? "ml-[72px]" : "ml-[240px]")}>
-        <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-line bg-surface px-4" data-testid="top-bar">
-          <button onClick={() => setCollapsed(!collapsed)} aria-label="Toggle sidebar" className="rounded-md p-2 text-inkmed hover:bg-subtle hover:text-ink">
-            <PanelLeft size={18} />
+      <div className={cn("flex min-w-0 flex-1 flex-col transition-[margin] duration-200 max-md:ml-0", sidebarCompact ? "ml-[72px]" : "ml-[240px]")}>
+        <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-line bg-surface px-3 sm:gap-3 sm:px-4" data-testid="top-bar">
+          <button onClick={toggleNavigation} aria-label="Toggle sidebar" className="shrink-0 rounded-md p-2 text-inkmed transition-colors hover:bg-subtle hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand" data-testid="sidebar-toggle-button">
+            {mobileNavOpen ? <X size={18} /> : <PanelLeft size={18} />}
           </button>
-          <button onClick={() => setSearchOpen(true)} className="flex h-9 w-full max-w-lg items-center gap-2 rounded-md border border-line bg-canvas px-3 text-sm text-inkmed hover:border-brand/40">
-            <Search size={15} /> {t("Search Shopify orders, products, customers…")}
-            <kbd className="ml-auto rounded border border-line bg-surface px-1.5 text-[10px]">/</kbd>
+          <button onClick={() => setSearchOpen(true)} className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md border border-line bg-canvas px-3 text-sm text-inkmed transition-colors hover:border-brand/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand sm:max-w-lg">
+            <Search size={15} className="shrink-0" />
+            <span className="min-w-0 flex-1 truncate text-left">{t("Search Shopify orders, products, customers…")}</span>
+            <kbd className="shrink-0 rounded border border-line bg-surface px-1.5 text-[10px]">/</kbd>
           </button>
           <div className="ml-auto flex items-center gap-2">
             <button
               onClick={syncNow}
               disabled={syncing || status?.sync_running}
-              className="flex h-9 items-center gap-1.5 rounded-md bg-brand px-3 text-sm font-medium text-white hover:bg-brand/90 disabled:cursor-wait disabled:opacity-60"
+              className="hidden h-9 items-center gap-1.5 rounded-md bg-brand px-3 text-sm font-medium text-white transition-colors hover:bg-brand/90 disabled:cursor-wait disabled:opacity-60 xl:flex"
               data-testid="sync-shopify-button"
             >
               <RefreshCw size={14} className={cn(syncing && "animate-spin")} />
@@ -266,7 +282,7 @@ export default function AppShell() {
             </button>
             <Popover>
               <PopoverTrigger asChild>
-                <button className="flex h-9 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium" data-testid="integration-health-trigger">
+                <button className="hidden h-9 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium xl:flex" data-testid="integration-health-trigger">
                   <StatusChip value={health} /> <ChevronDown size={12} className="text-inkmed" />
                 </button>
               </PopoverTrigger>
@@ -290,7 +306,7 @@ export default function AppShell() {
               </PopoverContent>
             </Popover>
             <LanguageSwitch />
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-subtle text-xs font-semibold text-ink">P</div>
+            <div className="hidden h-8 w-8 items-center justify-center rounded-full bg-subtle text-xs font-semibold text-ink sm:flex">P</div>
           </div>
         </header>
         <main className="min-w-0 flex-1"><Outlet /></main>

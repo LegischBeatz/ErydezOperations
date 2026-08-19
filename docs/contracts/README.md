@@ -47,6 +47,10 @@ This directory documents the implemented browser-to-API boundary. `frontend/src/
 | `GET /api/reports` | Shopify-derived aggregates | Read-only overview-compatible report payload. |
 | `GET /api/integrations` | Shopify integration summary | Returns configured/health state, last sync, and active counts. |
 
+### Gmail Workspace
+
+The Gmail OAuth, thread reading, AI drafting and confirmed thread-reply surface is documented separately in [`gmail.md`](gmail.md). Gmail messages remain outside the canonical Shopify snapshot model. The browser must use the centralized API client and may only render the sanitized `htmlBody` returned by the Gmail service.
+
 ### Compatibility Stubs
 
 Former mock-only list routes for work items, conversations, appointments, automations, approvals, and notifications return empty collections. Former order-note and update-suppression mutations return HTTP 409 with an explicit source-of-truth message. They remain temporary compatibility stubs and are not used by the production navigation.

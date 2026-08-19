@@ -25,6 +25,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import parseaddr, parsedate_to_datetime
+from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlencode
 
@@ -377,10 +378,130 @@ def _find_body_part(payload: dict[str, Any], preferred_mime: str = "text/plain")
     return ""
 
 
+_ALLOWED_EMAIL_HTML_TAGS = {
+    "a", "b", "blockquote", "br", "code", "div", "em", "font", "h1", "h2", "h3", "h4", "h5", "h6",
+    "hr", "i", "img", "li", "ol", "p", "pre", "s", "span", "strong", "sub", "sup", "table", "tbody",
+    "td", "th", "thead", "tr", "u", "ul",
+}
+_VOID_EMAIL_HTML_TAGS = {"br", "hr", "img"}
+_BLOCKED_EMAIL_HTML_TAGS = {"embed", "iframe", "object", "script", "style", "svg"}
+_ALLOWED_STYLE_PROPERTIES = {
+    "background-color", "border", "border-bottom", "border-collapse", "border-color", "border-radius", "border-spacing",
+    "border-style", "border-width", "color", "font-family", "font-size", "font-style", "font-weight", "height",
+    "line-height", "margin", "margin-bottom", "margin-left", "margin-right", "margin-top", "max-width", "min-width",
+    "padding", "padding-bottom", "padding-left", "padding-right", "padding-top", "text-align", "text-decoration",
+    "vertical-align", "white-space", "width",
+}
+
+
+def _safe_email_url(value: str, *, image: bool = False) -> str:
+    """Keep display and link URLs limited to safe, browser-renderable schemes."""
+    candidate = (value or "").strip()
+    lower = candidate.lower()
+    if lower.startswith(("https://", "http://", "mailto:")):
+        return candidate
+    if image and re.match(r"^data:image/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=\s]+$", candidate, flags=re.IGNORECASE):
+        return candidate
+    return ""
+
+
+def _safe_inline_style(value: str) -> str:
+    """Retain basic email formatting without allowing URL- or script-bearing CSS."""
+    safe_rules: list[str] = []
+    for declaration in (value or "").split(";"):
+        if ":" not in declaration:
+            continue
+        property_name, property_value = declaration.split(":", 1)
+        property_name = property_name.strip().lower()
+        property_value = property_value.strip()
+        lowered_value = property_value.lower()
+        if (
+            property_name in _ALLOWED_STYLE_PROPERTIES
+            and property_value
+            and not any(token in lowered_value for token in ("url(", "expression", "@import", "javascript:"))
+        ):
+            safe_rules.append(f"{property_name}: {property_value}")
+    return "; ".join(safe_rules)
+
+
+class _EmailHTMLSanitizer(HTMLParser):
+    """Dependency-free allow-list sanitizer for Gmail's stored HTML bodies."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._blocked_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized_tag = tag.lower()
+        if normalized_tag in _BLOCKED_EMAIL_HTML_TAGS:
+            self._blocked_depth += 1
+            return
+        if self._blocked_depth or normalized_tag not in _ALLOWED_EMAIL_HTML_TAGS:
+            return
+        attributes: list[str] = []
+        for name, raw_value in attrs:
+            normalized_name = name.lower()
+            value = raw_value or ""
+            safe_value = ""
+            if normalized_name == "style":
+                safe_value = _safe_inline_style(value)
+            elif normalized_name == "href" and normalized_tag == "a":
+                safe_value = _safe_email_url(value)
+            elif normalized_name == "src" and normalized_tag == "img":
+                safe_value = _safe_email_url(value, image=True)
+            elif normalized_name in {"alt", "title", "align"}:
+                safe_value = value.strip()
+            elif normalized_name in {"width", "height", "colspan", "rowspan"} and value.strip().isdigit():
+                safe_value = value.strip()
+            if safe_value:
+                attributes.append(f' {normalized_name}="{html.escape(safe_value, quote=True)}"')
+        if normalized_tag == "a":
+            attributes.append(' target="_blank" rel="noreferrer noopener"')
+        self.parts.append(f"<{normalized_tag}{''.join(attributes)}>")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in _BLOCKED_EMAIL_HTML_TAGS or self._blocked_depth:
+            return
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized_tag = tag.lower()
+        if normalized_tag in _BLOCKED_EMAIL_HTML_TAGS and self._blocked_depth:
+            self._blocked_depth -= 1
+            return
+        if self._blocked_depth:
+            return
+        if normalized_tag in _ALLOWED_EMAIL_HTML_TAGS and normalized_tag not in _VOID_EMAIL_HTML_TAGS:
+            self.parts.append(f"</{normalized_tag}>")
+
+    def handle_data(self, data: str) -> None:
+        if not self._blocked_depth:
+            self.parts.append(html.escape(data))
+
+    def get_html(self) -> str:
+        return "".join(self.parts).strip()
+
+
+def _sanitize_email_html(value: str) -> str:
+    parser = _EmailHTMLSanitizer()
+    try:
+        parser.feed(value or "")
+        parser.close()
+    except Exception:
+        logger.warning("Could not sanitize an HTML email body; falling back to plain text")
+        return ""
+    return parser.get_html()
+
+
 def _clean_html_text(value: str) -> str:
     text = re.sub(r"<\s*(br|/p|/div|/li|/tr)\s*/?\s*>", "\n", value, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
     return html.unescape(text).strip()
+
+
+def _message_html(payload: dict[str, Any]) -> str:
+    return _sanitize_email_html(_find_body_part(payload, "text/html"))
 
 
 def _message_body(message: dict[str, Any]) -> str:
@@ -388,7 +509,7 @@ def _message_body(message: dict[str, Any]) -> str:
     plain = _find_body_part(payload, "text/plain")
     if plain:
         return plain.strip()
-    html_body = _find_body_part(payload, "text/html")
+    html_body = _message_html(payload)
     if html_body:
         return _clean_html_text(html_body)
     return str(message.get("snippet") or "").strip()
@@ -430,6 +551,7 @@ def _format_message_for_api(message: dict[str, Any], own_email: str) -> dict[str
         "subject": headers.get("subject", ""),
         "date": date_iso,
         "body": _message_body(message),
+        "htmlBody": _message_html(message.get("payload") or {}),
         "snippet": str(message.get("snippet") or ""),
         "direction": "out" if sender_email and sender_email == own_email.lower() else "in",
         "attachments": _attachments(message.get("payload") or {}),
