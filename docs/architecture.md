@@ -20,7 +20,7 @@ The application does not implement Shopify mutations, scheduled synchronization,
 | API client | Centralizes browser requests under `/api`; production uses same-origin requests. | Axios, `REACT_APP_BACKEND_URL` for separate development | Data normalization or provider-specific secrets |
 | FastAPI service | Exposes health, snapshot, canonical-query, control-plane, and Gmail endpoints. Creates indexes and coordinates snapshot activation. | MongoDB, Shopify adapter, Gmail service | Frontend presentation or external schedule management |
 | Shopify adapter | Loads configuration, obtains/reuses an access token, makes Admin GraphQL requests, retries/throttles, cursor-paginates, and normalizes snapshots. | Shopify Admin GraphQL | Persistent operational authority or browser behavior |
-| Gmail service | Implements OAuth authorization-code flow, Fernet token encryption, Gmail reads, sanitized HTML, reply construction, and optional AI draft generation. | Google OAuth/Gmail REST, MongoDB, optional OpenAI-compatible API | Background Gmail synchronization or automatic sending |
+| Gmail service | Implements OAuth authorization-code flow, Fernet token encryption, Gmail reads, sanitized HTML, reply construction, and optional AI draft generation from a server-supplied minimized fact card. | Google OAuth/Gmail REST, MongoDB, optional OpenAI-compatible API | Background Gmail synchronization, automatic sending, Shopify lookup, or canonical persistence |
 | MongoDB | Persists canonical snapshot collections, active metadata, sync history, integration control records, OAuth state, and encrypted refresh tokens. | Compose data network | Shopify authority or unauthenticated public access |
 | Nginx | Serves the compiled SPA, exposes `/healthz`, proxies `/api/`, and falls back to `index.html` for SPA routing. | Internal backend service | Application authentication or TLS |
 
@@ -69,7 +69,7 @@ An API readiness response proves MongoDB connectivity and reports whether a snap
 1. The Gmail page reads safe connection state from `GET /api/gmail/status`.
 2. When configured, `GET /api/gmail/oauth/start` writes a hash of a random state value with a ten-minute expiry, then redirects to Google consent. The callback consumes that state once, exchanges the authorization code, and stores only a Fernet-encrypted refresh token in MongoDB.
 3. Thread-list and thread-detail requests refresh a short-lived access token and call Gmail on demand. The server returns normalized thread/message fields, attachment metadata, plain-text `body`, and allow-list-sanitized `htmlBody`.
-4. AI draft generation reads the selected normalized thread and returns an editable draft; it does not write a message or send mail.
+4. AI draft generation reads the selected normalized thread and returns an editable draft; it does not write a message or send mail. When the thread has exactly one explicit numeric order reference, the FastAPI layer may read one matching order from the active Shopify snapshot and supply a minimized, transient fact card to the optional AI provider. It never performs a live Shopify request, mutation, customer-identity lookup, partial-reference lookup, or Gmail/Shopify data persistence.
 5. Sending accepts only `thread_id` and `content`. The server reloads the Gmail source thread, derives the recipient, subject, and reply headers from the most recent inbound message, and then calls Gmail send.
 
 ## MongoDB Collections

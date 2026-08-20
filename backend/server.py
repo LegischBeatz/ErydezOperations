@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+from draft_facts import build_shopify_fact_card, extract_thread_order_references
 from fastapi import APIRouter, Body, FastAPI, HTTPException, Query
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ASCENDING, DESCENDING, IndexModel
@@ -757,6 +758,40 @@ async def find_active(collection: str, record_id: str) -> dict[str, Any]:
     return record
 
 
+async def active_shopify_fact_card_for_thread(thread_messages: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str]:
+    """Resolve one explicit order reference against the active read-only snapshot.
+
+    Gmail drafting stays available when no snapshot/reference exists. The resolver
+    never matches customers by name, email, phone, product, or partial number.
+    """
+    references = extract_thread_order_references(thread_messages)
+    if not references:
+        return None, "reference_missing"
+    if len(references) != 1:
+        return None, "reference_ambiguous"
+    sync_id = await active_sync_id(required=False)
+    if not sync_id:
+        return None, "active_snapshot_missing"
+
+    reference = references[0]
+    matches = await db.orders.find(
+        {
+            "sync_id": sync_id,
+            "order_number": {"$in": [reference, f"#{reference}"]},
+        },
+        NO_ID,
+    ).limit(2).to_list(length=2)
+    if not matches:
+        return None, "order_not_found"
+    if len(matches) != 1:
+        return None, "order_ambiguous"
+    try:
+        return build_shopify_fact_card(matches[0]), "available"
+    except ValueError:
+        logger.warning("Active Shopify order could not be transformed into a draft fact card")
+        return None, "invalid_snapshot_record"
+
+
 @api.get("/orders/{order_id}")
 async def get_order(order_id: str) -> dict[str, Any]:
     return order_with_derived(await find_active("orders", order_id))
@@ -1273,11 +1308,15 @@ async def gmail_generate_ai_reply(
         messages = thread.get("messages") or []
         if not messages:
             raise HTTPException(status_code=422, detail="Thread enthält keine Nachrichten")
+        shopify_fact_card, shopify_fact_status = await active_shopify_fact_card_for_thread(messages)
         return generate_ai_reply(
             thread_messages=messages,
             sender_name=str(payload.get("sender_name") or "E-RYDEZ Team")[:100],
             language_hint=str(payload.get("language") or "")[:50] or None,
             custom_instructions=str(payload.get("instructions") or "")[:500] or None,
+            profile_hint=str(payload.get("profile_id") or "")[:80] or None,
+            shopify_fact_card=shopify_fact_card,
+            shopify_fact_status=shopify_fact_status,
         )
     except GmailServiceError as exc:
         raise gmail_http_exception(exc) from exc

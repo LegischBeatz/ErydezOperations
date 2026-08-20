@@ -340,6 +340,16 @@ function ThreadSkeleton() {
 /* AI composer                                                                 */
 /* -------------------------------------------------------------------------- */
 
+const AI_REPLY_PROFILE_OPTIONS = [
+  { id: "", label: "Automatisch aus Anliegen erkennen" },
+  { id: "delivery_status", label: "Lieferstatus & Verzögerung" },
+  { id: "pickup_appointment", label: "Abholung & Termin" },
+  { id: "order_change_or_payment", label: "Bestellung, Änderung & Zahlung" },
+  { id: "cancellation_or_refund", label: "Stornierung & Erstattung" },
+  { id: "technical_or_parts", label: "Produkt, Technik & Ersatzteile" },
+  { id: "clarification", label: "Klärungsfrage" },
+];
+
 function AiDraftPanel({ draft, factsUsed, disclaimer, onDismiss }) {
   if (!draft) return null;
   return (
@@ -361,10 +371,84 @@ function AiDraftPanel({ draft, factsUsed, disclaimer, onDismiss }) {
   );
 }
 
+function DraftPlanPanel({ plan }) {
+  if (!plan) return null;
+  const hasWarnings = plan.risk_flags?.some((flag) => flag !== "operator_review_required");
+  return (
+    <div className="mb-3 rounded-lg border border-line bg-subtle/70 p-3" data-testid="gmail-ai-draft-plan">
+      <div className="flex items-start gap-2">
+        {hasWarnings ? <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warn" /> : <ShieldCheck size={15} className="mt-0.5 shrink-0 text-ok" />}
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-ink">Kontext für diesen Entwurf</p>
+          <p className="mt-0.5 text-[11px] leading-4 text-inkmed">
+            {plan.reply_profile?.label || "Automatisch erkannt"} · {plan.language || "Sprache wird geprüft"} · {plan.formality || "neutrale Anrede"}
+          </p>
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5" aria-label="Erkannte Kontextsignale">
+        {plan.order_reference_detected
+          ? <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] text-ok">Auftragsreferenz erkannt</span>
+          : <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] text-warn">Auftragsreferenz nicht eindeutig</span>}
+        {plan.risk_flags?.filter((flag) => flag !== "operator_review_required").map((flag) => (
+          <span key={flag} className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] text-warn">Prüfung erforderlich</span>
+        ))}
+      </div>
+      {plan.missing_information?.length > 0 && (
+        <p className="mt-2 text-[11px] leading-4 text-inkmed"><span className="font-semibold text-ink">Fehlende Angaben:</span> {plan.missing_information.join(" · ")}</p>
+      )}
+    </div>
+  );
+}
+
+const SHOPIFY_FACT_FALLBACKS = {
+  reference_missing: "Keine eindeutige Bestellreferenz im Thread erkannt.",
+  reference_ambiguous: "Mehrere Bestellreferenzen erkannt; es wurden keine Shopify-Daten verwendet.",
+  active_snapshot_missing: "Kein aktiver Shopify-Snapshot verfügbar; es wurden keine Shopify-Daten verwendet.",
+  order_not_found: "Die Bestellreferenz wurde im aktiven Shopify-Snapshot nicht gefunden.",
+  order_ambiguous: "Die Bestellreferenz ist im aktiven Shopify-Snapshot nicht eindeutig.",
+  invalid_snapshot_record: "Für die Bestellreferenz stehen keine sicher verwendbaren Shopify-Fakten bereit.",
+};
+
+function ShopifyFactCard({ facts, status }) {
+  if (!facts) {
+    const fallback = SHOPIFY_FACT_FALLBACKS[status];
+    return fallback ? <p className="mb-3 text-[11px] leading-4 text-inkmed" data-testid="gmail-shopify-facts-fallback">{fallback}</p> : null;
+  }
+  const statusRows = [
+    ["Zahlung", facts.financial_status],
+    ["Fulfillment", facts.fulfillment_status],
+    ["Rückgabe", facts.return_status],
+    ["Versandart", facts.delivery_method],
+  ].filter(([, value]) => value);
+  return (
+    <section className="mb-3 rounded-lg border border-emerald-200 bg-emerald-50/65 p-3" data-testid="gmail-shopify-facts">
+      <div className="flex items-start gap-2">
+        <ShieldCheck size={15} className="mt-0.5 shrink-0 text-ok" />
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-ink">Verifizierte Shopify-Fakten</p>
+          <p className="mt-0.5 text-[11px] leading-4 text-inkmed">Aktiver, schreibgeschützter Snapshot · Stand {facts.snapshot_synced_at ? formatFullDate(facts.snapshot_synced_at) : "nicht verfügbar"}</p>
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        <span className="rounded-full border border-emerald-200 bg-surface px-2 py-0.5 text-[10px] text-ok">{facts.order_reference}</span>
+        {facts.cancelled && <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] text-warn">Storno im Snapshot markiert</span>}
+      </div>
+      {statusRows.length > 0 && (
+        <dl className="mt-2 grid gap-x-3 gap-y-1 text-[11px] sm:grid-cols-2">
+          {statusRows.map(([label, value]) => <div key={label} className="flex min-w-0 justify-between gap-2"><dt className="text-inkmed">{label}</dt><dd className="truncate font-medium text-ink">{value}</dd></div>)}
+        </dl>
+      )}
+      {facts.tracking_numbers?.length > 0 && <p className="mt-2 text-[11px] leading-4 text-inkmed"><span className="font-semibold text-ink">Tracking:</span> {facts.tracking_numbers.join(" · ")}</p>}
+      {facts.line_items?.length > 0 && <p className="mt-1 text-[11px] leading-4 text-inkmed"><span className="font-semibold text-ink">Artikel:</span> {facts.line_items.map((item) => `${item.quantity}× ${item.title}`).join(" · ")}</p>}
+    </section>
+  );
+}
+
 function Composer({ thread, aiAvailable, onSent }) {
   const [draft, setDraft] = useState("");
   const [aiMeta, setAiMeta] = useState(null);
   const [aiInstructions, setAiInstructions] = useState("");
+  const [selectedProfile, setSelectedProfile] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -374,6 +458,7 @@ function Composer({ thread, aiAvailable, onSent }) {
     setDraft("");
     setAiMeta(null);
     setAiInstructions("");
+    setSelectedProfile("");
     setShowConfirm(false);
     setShowGuidance(false);
   }, [thread?.id]);
@@ -390,7 +475,10 @@ function Composer({ thread, aiAvailable, onSent }) {
     setAiMeta(null);
     setShowConfirm(false);
     try {
-      const result = await api.gmailAiReply(thread.id, { instructions: aiInstructions.trim() || undefined });
+      const result = await api.gmailAiReply(thread.id, {
+        instructions: aiInstructions.trim() || undefined,
+        profile_id: selectedProfile || undefined,
+      });
       setDraft(result.draft || "");
       setAiMeta(result);
       toast.success("KI-Entwurf generiert", { description: "Der Entwurf kann vor dem Versand vollständig bearbeitet werden." });
@@ -432,9 +520,26 @@ function Composer({ thread, aiAvailable, onSent }) {
       </div>
 
       {aiMeta && <AiDraftPanel draft={aiMeta.draft} factsUsed={aiMeta.facts_used} disclaimer={aiMeta.disclaimer} onDismiss={() => setAiMeta(null)} />}
+      {aiMeta?.draft_plan && <DraftPlanPanel plan={aiMeta.draft_plan} />}
+      {aiMeta && <ShopifyFactCard facts={aiMeta.shopify_facts} status={aiMeta.draft_plan?.shopify_fact_status} />}
 
       {aiAvailable ? (
         <div className="mb-3 rounded-md border border-line bg-subtle/55">
+          <div className="border-b border-line px-3 py-2.5">
+            <label htmlFor={`gmail-ai-profile-${thread?.id}`} className="text-xs font-semibold text-ink">Antwortprofil</label>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <select
+                id={`gmail-ai-profile-${thread?.id}`}
+                value={selectedProfile}
+                onChange={(event) => setSelectedProfile(event.target.value)}
+                className="h-9 max-w-full rounded-md border border-line bg-surface px-2 text-xs text-ink outline-none transition-colors focus:ring-2 focus:ring-brand"
+                data-testid="gmail-ai-profile-select"
+              >
+                {AI_REPLY_PROFILE_OPTIONS.map((profile) => <option key={profile.id || "auto"} value={profile.id}>{profile.label}</option>)}
+              </select>
+              <p className="text-[11px] leading-4 text-inkmed">Steuert nur den nächsten Entwurf und wird nicht gespeichert.</p>
+            </div>
+          </div>
           <button
             type="button"
             onClick={() => setShowGuidance((value) => !value)}

@@ -69,9 +69,15 @@ The API returns plain text plus sanitized HTML and attachment metadata. Attachme
 
 ### Generate an AI draft
 
-Select a thread, optionally expand **Hinweise für den KI-Entwurf**, and provide at most 500 characters of concrete business context. Generate a draft, then review/edit it. The service sends a bounded thread context to the optional AI provider and returns plain text plus a disclaimer; it does not send Gmail.
+Select a thread and, when useful, choose one temporary **Antwortprofil** before generating. The default is automatic recognition from the current customer request. Available profiles cover delivery status, pickup appointments, order/payment changes, cancellation/refund, technical/parts, and clarification. The selected profile applies only to the next draft and is not stored.
 
-Use the manual composer if the AI provider is unavailable, quota-limited, or inappropriate for the message. Never treat a draft’s delivery date, tracking data, price, or commitment as verified merely because it appears fluent.
+Optionally expand **Hinweise für den KI-Entwurf** and provide at most 500 characters of concrete business context. Generate a draft, then review/edit it. The service removes common quoted reply blocks from the AI context, derives a non-persistent context plan, and returns plain text plus a disclaimer. The plan visibly reports the selected profile, language/formality hint, whether an order reference was detected, missing information, and any review flags. It does not send Gmail or persist the plan.
+
+When a thread has exactly one explicit order number and that order exists uniquely in the active Shopify snapshot, the composer may also display a green **Verifizierte Shopify-Fakten** card. It identifies the active read-only snapshot and may show the order reference, snapshot timestamp, payment/fulfillment/return state, delivery method, cancellation marker, verified provider tracking numbers, and product titles/quantities. The card never proves a promised delivery date, refund, price, availability, diagnosis, or operational commitment.
+
+If no card is shown, the displayed fallback explains only the safe reason, such as missing/multiple reference, missing active snapshot, absent order, or ambiguous order. Do not work around a fallback by searching customer name, email address, phone number, product name, or partial order number in the console. Correct the reference in the existing Gmail thread or handle the case manually.
+
+Treat risk flags, missing-information labels, and Shopify facts as prompts for operator review, not as a substitute for operational judgment. In particular, never treat a generated delivery date, tracking data, price, cancellation, refund, availability, diagnosis, or commitment as verified merely because it appears fluent. Use the manual composer if the AI provider is unavailable, quota-limited, or inappropriate for the message.
 
 ### Send an existing-thread reply
 

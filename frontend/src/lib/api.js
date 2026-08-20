@@ -42,7 +42,8 @@ export const api = {
   gmailDisconnect: () => post("/gmail/disconnect", {}),
   gmailThreads: (params) => get("/gmail/threads", params),
   gmailThread: (threadId) => get(`/gmail/threads/${encodeURIComponent(threadId)}`),
-  gmailAiReply: (threadId, body) => post(`/gmail/threads/${encodeURIComponent(threadId)}/ai-reply`, body || {}),
+  // Optional payload fields: sender_name, language, instructions, profile_id.
+  gmailAiReply: (threadId, payload) => post(`/gmail/threads/${encodeURIComponent(threadId)}/ai-reply`, payload || {}),
   gmailSend: (body) => post("/gmail/send", body),
 
   // Temporary compatibility helpers for pages removed from primary navigation.

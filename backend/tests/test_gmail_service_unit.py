@@ -23,6 +23,7 @@ import gmail_service
 from gmail_service import (
     GmailConfigurationError,
     _build_conversation_context,
+    _build_draft_plan,
     _detect_language,
     _extract_sender_name,
     _fernet,
@@ -248,6 +249,66 @@ def test_detect_german_french_and_english():
     assert _detect_language({"body": "Guten Tag, wann wird meine Bestellung geliefert? Freundliche Grüsse"}) == "Deutsch"
     assert _detect_language({"body": "Bonjour, merci pour votre commande. Cordialement."}) == "Französisch"
     assert _detect_language({"body": "Hello, thank you for your order. Please confirm delivery."}) == "Englisch"
+
+
+def test_draft_plan_classifies_delivery_without_reusing_quoted_history():
+    plan = _build_draft_plan([
+        {"direction": "out", "body": "Wir prüfen den Versand.", "subject": "Bestellung"},
+        {
+            "direction": "in",
+            "body": "Hello, when will my delivery arrive?\n\nOn 19 August, E-RYDEZ wrote:\nWe will ship it tomorrow.",
+            "subject": "Re: Bestellung",
+        },
+    ])
+
+    assert plan["intent"] == "delivery_status"
+    assert plan["reply_profile"]["id"] == "delivery_status"
+    assert plan["language"] == "Englisch"
+    assert plan["order_reference_detected"] is False
+    assert "delivery_or_tracking_must_be_verified" in plan["risk_flags"]
+    assert "order_reference_missing" in plan["risk_flags"]
+    assert plan["missing_information"] == ["Bestellnummer oder andere eindeutige Auftragsreferenz"]
+
+
+def test_draft_plan_detects_pickup_order_reference_and_formality():
+    plan = _build_draft_plan([
+        {
+            "direction": "in",
+            "body": "Guten Tag, ich möchte für Bestellung #3691512 einen Abholtermin vereinbaren.",
+            "subject": "Abholung Bestellung #3691512",
+        },
+    ])
+
+    assert plan["intent"] == "pickup_appointment"
+    assert plan["order_reference_detected"] is True
+    assert plan["formality"] == "formell"
+    assert plan["missing_information"] == []
+    assert "availability_must_be_verified" in plan["risk_flags"]
+
+
+def test_draft_plan_rejects_unknown_language_and_profile_hints():
+    plan = _build_draft_plan(
+        [{"direction": "in", "body": "Hello, can you confirm my delivery?", "subject": "Delivery"}],
+        language_hint="Unsupported",
+        profile_hint="not-a-profile",
+    )
+
+    assert plan["language"] == "Englisch"
+    assert plan["reply_profile"]["id"] == "delivery_status"
+
+
+def test_build_conversation_context_removes_reply_quotations():
+    context = _build_conversation_context([
+        {
+            "direction": "in",
+            "from": "Customer <customer@example.com>",
+            "subject": "Delivery",
+            "body": "Hallo, wann kommt die Bestellung?\n\nAm 19.08. schrieb E-RYDEZ:\nDie Bestellung wurde ausgeliefert.",
+        },
+    ])
+
+    assert "wann kommt die Bestellung" in context
+    assert "Die Bestellung wurde ausgeliefert" not in context
 
 
 def test_sender_name_extraction_accepts_normalized_and_raw_messages():
