@@ -1,20 +1,14 @@
 # Changelog
 
-All notable changes to this project are documented here.
+## Unreleased
 
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases use
-Semantic Versioning.
+### Documentation alignment
 
-## [Unreleased]
+- Rebuilt the repository’s agent instructions, project overview, architecture, contracts, decisions, runbooks, and onboarding guides from the current React, FastAPI, MongoDB, Shopify, and Gmail implementations.
+- Corrected stale mock-prototype and MCP-connector descriptions. The active commerce path is a Shopify-authoritative validated snapshot; Gmail uses direct Google OAuth 2.0 and Gmail REST with encrypted refresh-token persistence.
+- Documented the implemented read-only Shopify boundary, active-snapshot activation behavior, optional AI draft workflow, Gmail send safeguards, deployment exposure limit, and validation prerequisites.
+- Added a Gmail workspace runbook and a durable decision index; removed the placeholder ADR template.
 
-- Continue hardening the Docker-based installation workflow across Windows, Linux, and macOS.
-- Plan production prerequisites separately from the mock-backed prototype.
+## Release Policy
 
-## [1.0.0] - Planned
-
-This is the planned release-readiness baseline for the Docker Compose prototype. It includes
-reproducible setup documentation, Windows PowerShell bootstrap support, cross-platform Compose
-guidance, and automated container smoke validation.
-
-It does not imply production readiness. Authentication, TLS, live external integrations, database
-migrations, automated backups, and monitoring remain future work.
+The repository does not contain a confirmed released-version history or a formal release automation workflow. Do not infer production readiness from this file. Versioned release notes should be added only when a release identifier, scope, validation evidence, migration/recovery impact, and compatibility statement are established in the code and delivery process.

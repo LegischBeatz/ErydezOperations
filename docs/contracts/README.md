@@ -1,77 +1,74 @@
-# Contracts
+# API and Data Contracts
 
-## Purpose
+## Contract Authority
 
-This directory documents the implemented browser-to-API boundary. `frontend/src/lib/api.js` remains the client boundary, `backend/server.py` defines server behavior, and `backend/shopify.py` owns Shopify transport and normalization. Shopify is authoritative; MongoDB is a canonical read model.
+The implemented contract is `backend/server.py`. Browser code must call it only through [`frontend/src/lib/api.js`](../../frontend/src/lib/api.js). This document records current behavior; it does not create an external versioned-service guarantee. Any change to route paths, request validation, response fields, or error behavior must update the backend, API client, tests, this document, and the matching runbook in one change.
 
-## HTTP API
+The Gmail contract is separated into [`gmail.md`](gmail.md) because Gmail has OAuth, content-safety, and real send-side-effect rules that do not apply to canonical Shopify data.
 
-| Property | Contract |
+## HTTP Envelope
+
+| Property | Current contract |
 |---|---|
 | Base path | `/api` |
-| Transport | JSON over HTTP |
-| Authentication | None; trusted-LAN deployment only |
-| Runtime schema | FastAPI-generated OpenAPI |
-| Operational mutation policy | Shopify records are read-only in this console |
-| Active-record scope | All canonical queries use the active `sync_id` |
+| Representation | JSON request and response bodies unless an OAuth route redirects the browser. |
+| Authentication | None at the application layer. Compose publishes only the frontend loopback port by default; do not treat this as an Internet-facing API. |
+| CORS | Disabled unless `CORS_ORIGINS` is non-empty. When configured, it enables credentials and all methods/headers for the listed origins. |
+| API schema | FastAPI provides runtime OpenAPI from implementation annotations, but handlers return direct JSON dictionaries/lists rather than explicit Pydantic response models. |
+| Error body | FastAPI `HTTPException` responses use `{ "detail": "..." }`; request parsing/validation may return FastAPI’s standard `422` detail array. |
 
-### Health, Identity, and Synchronization
+## Data Ownership
 
-| Method and path | Purpose | Notable inputs or rules |
+| Data family | Authority | API behavior |
 |---|---|---|
-| `GET /api/` | API identity | Returns source `shopify` and schema version. |
-| `GET /api/health/live` | Process liveness | Does not check MongoDB or Shopify. |
-| `GET /api/health/ready` | Persistence readiness | Pings MongoDB and reports whether an active Shopify snapshot exists. |
-| `GET /api/shopify/status` | Connection and snapshot status | Optional `live=true` performs a live Shopify profile/count check. Never returns credentials. |
-| `POST /api/shopify/sync` | Complete authoritative synchronization | Single-run lock; stages, validates, activates, then cleans stale/mock data. HTTP 409 if already running. |
-| `GET /api/shopify/sync-runs` | Recent synchronization history | Newest first; bounded history. |
-| `POST /api/reset` | Removed mock reset | Returns HTTP 410; it never deletes the active Shopify snapshot. |
+| Commerce | Shopify Admin GraphQL | The API serves only the active normalized MongoDB snapshot. It does not mutate Shopify. |
+| Snapshot state | FastAPI/MongoDB | `meta.id = "shopify_sync"` identifies active snapshot metadata; `sync_runs` provides recent execution records. |
+| Integration control | FastAPI/MongoDB | Connection readiness, lifecycle intent, health snapshots, recovery owner, and audit records are console-owned metadata. |
+| Gmail | Gmail REST API | Threads are retrieved on demand. MongoDB stores OAuth state, encrypted refresh-token data, and safe refresh metadata, not a mailbox mirror. |
+| AI drafts | Optional OpenAI-compatible endpoint | A draft is generated per request and returned to the browser. It is not persisted or sent by draft generation. |
 
-### Canonical Shopify Queries
+## Health and Shopify Synchronization
 
-| Method and path | Purpose | Notable inputs or rules |
+| Method and path | Request inputs | Response / behavior |
 |---|---|---|
-| `GET /api/overview` | Shopify-derived dashboard aggregates | Returns source, currency, sales, status counts, recent orders, top products, and low-stock items. |
-| `GET /api/orders` | Paginated Shopify orders | `q`, `financial_status`, `fulfillment_status`, `cancelled`, `requires_shipping`, `page`, `page_size`. |
-| `GET /api/orders/{id}` | Canonical order detail | Accepts normalized legacy ID; contains customer, addresses, money, items, fulfillments, refunds, Returns, and tracking. |
-| `GET /api/products` | Product catalog | Optional `q` and Shopify `status`. Includes price range, variant/inventory summary, and media. |
-| `GET /api/products/{id}` | Product detail | Adds linked variants and inventory items. |
-| `GET /api/inventory` | Paginated inventory items | `q`, `low_stock`, `page`, `page_size`; quantity states and location levels. |
-| `GET /api/inventory/{id}` | Inventory detail | Adds linked open orders and duplicate-SKU count. |
-| `GET /api/customers` | Paginated Shopify customers | `q`, `page`, `page_size`. |
-| `GET /api/customers/{id}` | Customer detail | Adds linked Shopify orders. |
-| `GET /api/fulfillments` | Shopify fulfillment records | Newest first; tracking, status, timestamps, and line quantities. |
-| `GET /api/refunds` | Shopify refunds | Newest first; linked orders, money, refund lines, transactions, restock behavior. |
-| `GET /api/returns` | Shopify Return objects | Newest first; distinct from refunds. |
-| `GET /api/search` | Cross-entity search | `q`; searches orders, products, customers, and inventory within the active snapshot. |
-| `GET /api/reports` | Shopify-derived aggregates | Read-only overview-compatible report payload. |
-| `GET /api/integrations` | Shopify integration summary | Returns configured/health state, last sync, and active counts. |
+| `GET /api/` | None | Identity object with API title message, `schema_version`, and `source: "shopify"`. |
+| `GET /api/health/live` | None | `{ "status": "live" }`; it does not test MongoDB or Shopify. |
+| `GET /api/health/ready` | None | Pings MongoDB and returns `{ "status": "ready", "shopify_snapshot_active": boolean }`. Mongo failure is `503`. |
+| `GET /api/shopify/status` | `live` boolean query; defaults to `true` | Safe configuration and snapshot state. When live and configured, it calls Shopify for profile/count status. It never returns secrets. |
+| `POST /api/shopify/sync` | Empty body accepted | Starts a complete snapshot synchronization. Only one process-local run is allowed. Success returns `ok`, `run_id`, active snapshot metadata, validation, cleanup, and insertion counts. |
+| `GET /api/shopify/sync-runs` | None | Up to 25 newest-first sync-run documents. |
+| `POST /api/reset` | Any | Permanently removed compatibility endpoint; always `410`. |
 
-### Gmail Workspace
+A synchronization reads accessible Shopify records, validates a staged snapshot, then switches the active metadata record. See [`../runbooks/shopify-synchronization.md`](../runbooks/shopify-synchronization.md) for operational procedure and [`../architecture.md`](../architecture.md) for the activation sequence.
 
-The Gmail OAuth, thread reading, AI drafting and confirmed thread-reply surface is documented separately in [`gmail.md`](gmail.md). Gmail messages remain outside the canonical Shopify snapshot model. The browser must use the centralized API client and may only render the sanitized `htmlBody` returned by the Gmail service.
+## Canonical Commerce Queries
 
-### Compatibility Stubs
+All canonical routes below require an active snapshot. Without one, they return `503` with `No successful Shopify snapshot is active`.
 
-Former mock-only list routes for work items, conversations, appointments, automations, approvals, and notifications return empty collections. Former order-note and update-suppression mutations return HTTP 409 with an explicit source-of-truth message. They remain temporary compatibility stubs and are not used by the production navigation.
+| Method and path | Query or path inputs | Response shape and rules |
+|---|---|---|
+| `GET /api/overview` | None | Shopify-derived dashboard: `source`, `currency`, `last_sync`, `sync`, `cards`, financial/fulfillment counts, recent orders, low stock, and top products. |
+| `GET /api/orders` | `q`, `filter`, `financial_status`, `fulfillment_status`, `delivery_method`, `page` ≥ 1, `page_size` 1–250 | Paginated order response. `filter` recognizes `unfulfilled`, `over-8`, `over-14`, `over-30`, `shipping`, `pickup`, and `cancelled-refunded`; unrecognized values do not add a filter. |
+| `GET /api/orders/{order_id}` | Normalized ID, Shopify GID, or order number | Active order with derived `business_day_age`, `customer_name`, and `city`; `404` when absent. |
+| `POST /api/orders/{order_id}/notes` | Any body | Legacy write route; always `409`. |
+| `POST /api/orders/{order_id}/pause-updates` | Any body | Legacy write route; always `409`. |
+| `POST /api/orders/{order_id}/timeline` | Any body | Legacy write route; always `409`. |
+| `GET /api/products` | `q`, `status` | Active product list, sorted by title. |
+| `GET /api/products/{product_id}` | Normalized ID or Shopify GID | Product plus linked active `variants` and `inventory`; `404` when absent. |
+| `GET /api/inventory` | `q`, `low_stock` boolean, `page` ≥ 1, `page_size` 1–250 | Paginated inventory items. Low stock means tracked with `quantities.available <= 3`. |
+| `GET /api/inventory/{item_id}` | Normalized ID, Shopify GID, or SKU | Inventory item plus linked `variant`, `product`, and unfulfilled `open_orders`; `404` when absent. |
+| `GET /api/customers` | `q`, `page` ≥ 1, `page_size` 1–250 | Paginated active customers. |
+| `GET /api/customers/{customer_id}` | Normalized ID or Shopify GID | Customer plus linked active orders; `404` when absent. |
+| `GET /api/fulfillment` and `GET /api/fulfillments` | None | Same newest-first active fulfillment list. |
+| `GET /api/refunds` | None | Newest-first active refund list. |
+| `GET /api/returns` | None | Newest-first active return list. |
+| `GET /api/returns/{return_id}` | Normalized ID or Shopify GID | One active return; `404` when absent. |
+| `GET /api/reports` | None | Read-only report derived from `overview`, including current `refreshed_at`. |
+| `GET /api/search` | Required `q` string | Up to eight matching orders, products, customers, and inventory items per family. Empty/whitespace query returns empty arrays. |
 
-## Canonical Data Contract
+### Pagination Shape
 
-Every canonical Shopify document contains:
-
-| Field | Meaning |
-|---|---|
-| `source` | Always `shopify` |
-| `sync_id` | Snapshot membership identifier |
-| `shopify_id` | Stable Shopify GraphQL GID |
-| `id` | Normalized legacy/resource identifier used in console URLs |
-| `synced_at` | Snapshot acquisition timestamp |
-
-Entity-specific records retain authoritative statuses, timestamps, money bags, addresses, line items, media, options, quantities, and relationship identifiers. Missing source fields remain `null`, empty, or explicitly unavailable; the API does not invent mock replacements.
-
-## Pagination Contract
-
-Orders, customers, and inventory use one-based `page` and bounded `page_size` values. Responses have the following shape:
+Orders, inventory, and customers use one-based pages. `pages` is always at least `1`, including an empty result.
 
 ```json
 {
@@ -79,46 +76,118 @@ Orders, customers, and inventory use one-based `page` and bounded `page_size` va
   "total": 0,
   "page": 1,
   "page_size": 100,
-  "pages": 0
+  "pages": 1
 }
 ```
 
-Shopify ingestion itself uses cursor pagination and does not rely on console page numbers.[1]
+### Canonical Record Baseline
 
-## Validation and Errors
+Every persisted canonical record created by `backend/shopify.py` carries the following fields. Source fields may be `null` or empty when Shopify did not supply them; the API does not synthesize a substitute.
 
-| Condition | HTTP result | Consumer action |
+| Field | Meaning |
+|---|---|
+| `id` | Normalized short Shopify resource ID used by console routes. |
+| `shopify_id` | Original Shopify GraphQL GID. |
+| `source` | Always `shopify`. |
+| `sync_id` | Complete snapshot membership identifier. |
+| `synced_at` | Snapshot acquisition timestamp. |
+
+| Entity | Contractually relevant fields and links |
+|---|---|
+| Order | Number, confirmation number, timestamps, financial/fulfillment/return status, customer, addresses, shipping data, money bags, line items, fulfillment/refund/return arrays, and tracking. |
+| Product | Title, handle, status, vendor/type, tags, category, media, options, price ranges, source timestamps, and variant IDs/count. |
+| Variant | Product links, SKU/barcode, prices, availability, inventory state, selected options, image, and Shopify inventory-item link. |
+| Inventory item | Variant/product links, SKU, tracking flags, origin/cost/weight, aggregate quantity states, and location-level quantities. |
+| Customer | Display identity, email/phone, source state/tags/notes, aggregate order/spend data, default address, and timestamps. |
+| Fulfillment, refund, return | Parent order link plus provider-specific status, timestamp, quantity, money, tracking, or note fields. |
+
+Money values are normalized into a money bag with `amount`, `currency`, `presentment_amount`, and `presentment_currency`. Inventory quantity maps use `available`, `committed`, `incoming`, `on_hand`, and `reserved` when normalized from the provider.
+
+## Integration Control and Local Evidence
+
+These routes manage console-owned integration records. They do not synchronize, mutate, or store provider payloads. `GET /api/integrations/{connection_id}/health` is intentionally a GET route that also inserts a health snapshot.
+
+| Method and path | Request inputs | Behavior |
 |---|---|---|
-| Missing canonical record | 404 | Return to the corresponding list or refresh after synchronization. |
-| Synchronization already active | 409 | Wait for the active run; inspect sync history. |
-| Attempted mock mutation | 409 | Perform the change in Shopify. |
-| Removed reset endpoint | 410 | Never reseed; run a validated Shopify synchronization. |
-| Shopify/configuration/integrity failure | 502 | Preserve the active snapshot, inspect run history and logs, correct the cause, then retry. |
-| MongoDB unavailable | 503 readiness | Restore persistence connectivity. |
-| Invalid query/body | 422 | Correct the request. |
+| `GET /api/integrations` | None | Shopify summary followed by console integration records with safe public connection and computed health data. |
+| `POST /api/integrations/gmail/initialize` | JSON `{ "reason": string }`, at least 8 characters | Creates the one local Gmail readiness record. Returns `409` if it already exists; no OAuth or Gmail data action occurs. |
+| `GET /api/integrations/{connection_id}` | Path ID | Safe connection fields plus latest recorded or computed health; `404` if unknown. |
+| `GET /api/integrations/{connection_id}/health` | Path ID | Computes and persists a safe health snapshot; `404` if unknown. |
+| `GET /api/integrations/{connection_id}/audit` | Path ID | Up to 100 newest-first console audit events; `404` if unknown. |
+| `GET /api/audit-timeline` | `limit` 1–500; default 250 | Read-only, newest-first safe audit timeline and scope note. |
+| `GET /api/provider-ledger` | `limit` 1–500; default 250 | Merged local Shopify sync-run and integration-control evidence; no provider events or payloads. |
+| `POST /api/integrations/{connection_id}/lifecycle` | JSON `action` and `reason` ≥ 8 characters | Records allowed lifecycle intent: `pause`, `resume`, `request_reauthorization`, or `request_disconnect`. Invalid actions/states return `422` or `409`. |
+| `POST /api/integrations/{connection_id}/recovery-owner` | JSON `display_name` ≥ 3 chars and `reason` ≥ 8 chars | Assigns a console recovery owner and writes audit evidence. |
 
-A new snapshot is not activated when source counts, Shopify-ID uniqueness, stored counts, or cross-record links fail validation.
+Public integration records include ID, provider, environment, display identity, lifecycle and desired state, capabilities, business/recovery owner, timestamps, and last action reason. They omit credentials, tokens, provider payloads, and raw Gmail content.
 
-## Runtime Configuration Contract
+## Gmail Workspace
 
-| Component | Variable | Required | Meaning |
+| Method and path | Contract summary |
+|---|---|
+| `GET /api/gmail/status` | Safe OAuth configuration, connection, lifecycle, refresh, and AI availability state. |
+| `GET /api/gmail/oauth/start` | Starts a CSRF-protected OAuth flow and redirects to Google. |
+| `GET /api/gmail/oauth/callback` | Consumes the authorization response and redirects to `/gmail` with an outcome code. |
+| `POST /api/gmail/disconnect` | Revokes Google access where possible and deletes local authorization data. |
+| `GET /api/gmail/threads` | On-demand list of normalized threads, Gmail-search query support, 1–100 results, optional page token. |
+| `GET /api/gmail/threads/{thread_id}` | Full normalized on-demand thread. |
+| `POST /api/gmail/threads/{thread_id}/ai-reply` | Returns an editable draft only. |
+| `POST /api/gmail/send` | Sends an explicitly requested existing-thread reply using server-derived addressing/threading metadata. |
+
+See [`gmail.md`](gmail.md) for the detailed Gmail request, response, safety, and failure contract.
+
+## Legacy Compatibility Surface
+
+The following routes remain so old pages can receive an empty response instead of a missing route. They are **not primary navigation workflows** and must not be documented as implemented business capabilities.
+
+| Route | Current response |
+|---|---|
+| `GET /api/work-items` | `{ "items": [], "counts": {} }` |
+| `GET /api/conversations`, `/api/appointments`, `/api/automations`, `/api/approvals`, `/api/notifications` | `[]` |
+| `GET /api/automations/runs` | `[]` |
+| `GET /api/purchasing` | `{ "suppliers": [], "purchase_orders": [] }` |
+
+The API client also retains obsolete helpers for now-unnavigated mock-era pages. Their presence is not a compatibility commitment for successful mutation; many target routes have no server implementation or intentionally return `409`.
+
+## Validation and Failure Semantics
+
+| Condition | Status | Consumer / operator behavior |
+|---|---|---|
+| MongoDB unavailable for readiness | `503` | Restore database connectivity. |
+| No active Shopify snapshot for canonical query | `503` | Run a successful complete sync; do not seed mock data. |
+| Canonical record or integration connection absent | `404` | Return to the parent view or correct the identifier. |
+| Concurrent Shopify sync | `409` | Wait for the active run and inspect sync history. |
+| Shopify write or legacy order mutation attempt | `409` | Perform the commerce change in Shopify, not this console. |
+| Invalid lifecycle transition | `409` | Check lifecycle state and submit an allowed next action. |
+| Gmail access paused by local lifecycle | `409` | Resume only through the integration control workflow. |
+| Removed reset request | `410` | Do not reseed; synchronize Shopify. |
+| Invalid request, invalid pagination, short reason/name, missing required query/body | `422` | Correct the request. |
+| Gmail authorization missing/expired/revoked | `401` | Reauthorize through the OAuth workflow. |
+| AI provider has no quota | `402` | Manual Gmail reply remains possible; resolve AI-provider quota separately. |
+| Shopify, Gmail, or OAuth provider failure | Usually `502` | Preserve active snapshot or Gmail state, inspect safe errors/logs, then retry after diagnosis. |
+| Gmail OAuth or encryption configuration absent | `503` | Configure the required environment variables without exposing secret values. |
+
+## Runtime Configuration
+
+| Component | Variable | Required when | Meaning |
 |---|---|---|---|
-| Backend | `MONGO_URL` | Yes | Authenticated MongoDB connection URL. |
-| Backend | `DB_NAME` | Yes | MongoDB database name. |
-| Backend | `CORS_ORIGINS` | No | Comma-separated allowed origins; blank disables cross-origin access. |
-| Backend | `SHOPIFY_STORE_DOMAIN` | Yes | Permanent `*.myshopify.com` store domain without protocol/path. |
-| Backend | `SHOPIFY_CLIENT_ID` | For client credentials | Shopify app client ID. |
-| Backend | `SHOPIFY_CLIENT_SECRET` | For client credentials | Shopify app client secret; untracked and never returned. |
-| Backend | `SHOPIFY_ADMIN_ACCESS_TOKEN` | Alternative | Static Admin API token; optional when client credentials are configured. |
-| Backend | `SHOPIFY_API_VERSION` | No | Admin API version; defaults to the application-tested value. |
-| Frontend | `REACT_APP_BACKEND_URL` | Development only | API origin without `/api`; production uses same-origin `/api`. |
-| Frontend dev server | `ENABLE_HEALTH_CHECK` | No | Enables custom development-server health routes when `true`. |
+| Backend | `MONGO_URL` | Always | Authenticated MongoDB connection URL. |
+| Backend | `DB_NAME` | Always | MongoDB database name. |
+| Backend | `CORS_ORIGINS` | Only separate browser origins | Comma-separated allowlist; blank disables CORS middleware. |
+| Backend | `ERYDEZ_LOCAL_OPERATOR_LABEL` | Optional | Safe attribution label for console-owned audit evidence. |
+| Shopify | `SHOPIFY_STORE_DOMAIN` | Shopify status/sync | MyShopify domain; protocol is stripped and suffix normalized by code. |
+| Shopify | `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET` | Client-credentials mode | Credentials used to obtain a short-lived Admin API token. |
+| Shopify | `SHOPIFY_ADMIN_ACCESS_TOKEN` | Static-token alternative | Used only when it has the expected Admin-token form; client credentials remain alternative. |
+| Shopify | `SHOPIFY_API_VERSION` | Optional | Defaults to `2025-10`. |
+| Gmail | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GMAIL_OAUTH_REDIRECT_URI`, `GMAIL_TOKEN_ENCRYPTION_KEY` | Gmail OAuth | Required configuration for Google OAuth and Fernet token encryption. |
+| AI drafts | `OPENAI_API_KEY` | AI draft generation only | Enables the optional draft provider. |
+| AI drafts | `OPENAI_API_BASE`, `GMAIL_AI_MODEL`, `GMAIL_AI_MAX_COMPLETION_TOKENS` | Optional | Provider base URL and draft model/output budget configuration. |
+| Frontend development | `REACT_APP_BACKEND_URL` | Separate dev servers | Backend origin without `/api`; blank in production enables Nginx same-origin `/api`. |
 
-## Compatibility
+## Compatibility Rules
 
-The canonical snapshot schema is versioned through `schema_version` in synchronization metadata and the API identity. Schema changes require synchronized backend, frontend, tests, contracts, runbooks, and an explicit migration/rollback plan.
+The code has a numeric `schema_version` in the API identity and active snapshot metadata, currently set by `backend/server.py`. It is not a comprehensive wire-format versioning system. Maintain compatibility deliberately: retain an existing field/route or coordinate all callers and documentation in the same change; add migration/rollback instructions for canonical schema changes; and record data-ownership, lifecycle, security, or deployment changes in an ADR.
 
-## References
+## Implementation Sources
 
-[1]: https://shopify.dev/docs/api/usage/pagination-graphql "Shopify GraphQL pagination"
-[2]: https://shopify.dev/docs/apps/build/authentication-authorization/client-secrets "Shopify client credentials"
+This contract is derived from [`backend/server.py`](../../backend/server.py), [`backend/shopify.py`](../../backend/shopify.py), [`backend/gmail_service.py`](../../backend/gmail_service.py), [`frontend/src/lib/api.js`](../../frontend/src/lib/api.js), and the current backend/frontend tests.

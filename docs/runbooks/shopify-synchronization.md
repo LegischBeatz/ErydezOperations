@@ -1,148 +1,146 @@
 # Runbook: Shopify Snapshot Synchronization
 
-## When to Use
+## Purpose and Safety Model
 
-Use this procedure for an operator-requested complete Shopify refresh, after changing Shopify credentials or API scopes, after deploying synchronization code, or when the console indicates that its active snapshot is stale. Shopify is authoritative; this procedure replaces the local read model but does not mutate Shopify.
+Use this runbook to create or refresh the console’s canonical Shopify snapshot after initial deployment, credential/scope repair, deployment of snapshot code, or confirmed stale data. Shopify remains authoritative. The procedure reads Shopify and writes the local MongoDB read model; it does not mutate Shopify.
 
-## Prerequisites
+A synchronization is safe by design only when operators preserve its activation model: a new snapshot is fetched and staged under a fresh `sync_id`, validated, then marked active. The previous active snapshot remains available during fetch/staging and after a failed run. Do not manually delete active collections to “make room” for a sync.
 
-| Requirement | Details |
+## Preconditions
+
+| Check | Required state |
 |---|---|
-| Required access | Trusted-LAN access to the console host and permission to operate Docker Compose |
-| Required tools | Docker Engine with Compose, PowerShell on Windows or a POSIX shell on Linux/macOS |
-| Required environment | Running MongoDB volume, untracked `.env`, reachable Shopify Admin GraphQL API |
-| Shopify configuration | `SHOPIFY_STORE_DOMAIN`, `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET`; optional static `SHOPIFY_ADMIN_ACCESS_TOKEN` |
-| Required scopes | Read access sufficient for orders, products, customers, fulfillments, inventory, and locations |
+| Deployment | Compose backend and MongoDB are healthy; `GET /api/health/ready` returns `200`. |
+| Local configuration | `SHOPIFY_STORE_DOMAIN` and either valid client credentials or a valid static Admin token are available to the backend. Compose requires client ID/secret interpolation. |
+| Provider access | Backend can reach Shopify Admin GraphQL and has read access for entities it fetches. |
+| Operational safety | No planned destructive database maintenance is in progress; a verified logical backup exists before schema/destructive recovery work. |
+| Concurrency | No other full sync is currently running. The server returns `409` for concurrent starts. |
 
-The client-credentials flow returns a short-lived access token. The application obtains and renews that token automatically; do not paste generated access tokens into source control.[1]
+Use a live status check to validate intended provider connectivity. It contacts Shopify and must be run only when that external request is expected.
 
-## Safety Properties
+```powershell
+Invoke-RestMethod http://127.0.0.1:8082/api/health/ready
+Invoke-RestMethod 'http://127.0.0.1:8082/api/shopify/status?live=true'
+```
 
-A full synchronization fetches and validates a new snapshot before changing the active snapshot identifier. The previous snapshot remains visible while staging. If fetching, normalization, insertion, or validation fails, staged records are removed and the previous snapshot remains active. Mock-only and stale data are deleted only after successful activation.
+A first deployment may have `shopify_snapshot_active: false`. That is expected before the initial successful synchronization but means canonical commerce routes cannot serve data.
+
+## Snapshot Scope
+
+The adapter fetches a shop profile/counts plus accessible products, embedded product variants, orders, embedded fulfillments/refunds/returns, customers, and inventory items/levels. It writes these normalized collections:
+
+| Collection | Origin | Key links validated |
+|---|---|---|
+| `shop` | Shop profile | Snapshot membership |
+| `orders` | Shopify orders | Customer and child records |
+| `products`, `variants` | Products and embedded variants | Variant → product |
+| `inventory_items` | Inventory items/levels | Inventory item → variant/product |
+| `customers` | Shopify customers | Customer → order |
+| `fulfillments`, `refunds`, `returns` | Embedded order records | Child → order |
+
+The adapter uses GraphQL cursor pagination. It validates source counts for orders, products, and customers; identifier uniqueness; expected stored counts; and configured cross-record links. The implementation preserves source values rather than inventing data for missing Shopify fields.
 
 ## Procedure
 
-### 1. Confirm service health
+### 1. Confirm current state
 
 ```powershell
-docker compose ps
-Invoke-RestMethod http://localhost:8082/api/health/ready
-Invoke-RestMethod 'http://localhost:8082/api/shopify/status?live=true'
+Invoke-RestMethod 'http://127.0.0.1:8082/api/shopify/status?live=false'
+Invoke-RestMethod http://127.0.0.1:8082/api/shopify/sync-runs
 ```
 
-Readiness must report `shopify_snapshot_active = true` during routine operations. A new deployment before its first synchronization may report `false`.
+Record the current `active_snapshot.active_sync_id`, `last_synced_at`, and latest run status before starting a change. This is evidence for diagnosing unexpected results, not a backup.
 
-### 2. Create a logical backup before a destructive migration
+### 2. Start the full synchronization
 
-Store backups outside the repository. Do not commit archives or credentials. Use `mongodump --archive --gzip` inside the authenticated MongoDB container, then copy the archive to an operator-controlled backup directory and record a SHA-256 checksum. Test restore procedures against a separate disposable Compose project.
-
-Routine subsequent snapshots do not require deleting the active snapshot first, but a verified backup remains recommended before schema changes or data cleanup.
-
-### 3. Start a complete synchronization
-
-From the console, open **Settings → Shopify integration → Run complete sync**. Alternatively:
+Use **Settings → Integrations → Run complete sync**, or issue the same request directly:
 
 ```powershell
 $result = Invoke-RestMethod `
   -Method Post `
-  -Uri 'http://localhost:8082/api/shopify/sync' `
+  -Uri 'http://127.0.0.1:8082/api/shopify/sync' `
   -ContentType 'application/json' `
-  -Body '{}' `
-  -TimeoutSec 300
+  -Body '{}'
 $result | ConvertTo-Json -Depth 8
 ```
 
-Only one synchronization can run at a time. A concurrent request returns HTTP 409.
+The request can remain open while the server fetches the provider. Do not retry while it is still running; a simultaneous request returns `409`.
 
-### 4. Validate activation
+### 3. Validate activation
 
 ```powershell
-$status = Invoke-RestMethod 'http://localhost:8082/api/shopify/status?live=true'
-$status.status
-$status.shopify_counts
-$status.active_snapshot.counts
-$status.active_snapshot.validation
-$status.latest_run
+$status = Invoke-RestMethod 'http://127.0.0.1:8082/api/shopify/status?live=true'
+$status.active_snapshot | ConvertTo-Json -Depth 8
+$status.latest_run | ConvertTo-Json -Depth 8
 ```
 
-The expected state is:
-
-| Check | Required result |
+| Validation | Expected result |
 |---|---|
-| Connection | `Healthy` |
-| Latest run | `completed` |
-| Snapshot validation | `valid = true` and no errors |
-| Source counts | Live order, product, and customer counts equal active snapshot counts |
-| Cross-record links | Every missing-link counter is zero |
-| Active snapshot | Non-empty `active_sync_id` and current `last_synced_at` |
+| Latest run | `status` is `completed`. |
+| Active snapshot | Non-empty `active_sync_id` and current `last_synced_at`. |
+| Integrity report | `validation.valid` is `true`; `errors` empty; missing-link counters are zero. |
+| Source counts | Live Shopify order/product/customer counts equal snapshot counts when provider counts are available. |
+| Provider state | Live status is `Healthy` rather than merely `Configured`. |
 
-### 5. Validate the console
-
-Open `http://localhost:8082/overview`, then verify Orders, Products, Inventory, Customers, Fulfillment, Returns & refunds, and Settings. Confirm that real Shopify identifiers and values render, list pagination works, a record opens its detail view, and global search navigates to the expected entity.
-
-### 6. Inspect run history and logs
+### 4. Validate console reads without writes
 
 ```powershell
-Invoke-RestMethod http://localhost:8082/api/shopify/sync-runs
-docker compose logs --tail 200 backend
+Invoke-RestMethod 'http://127.0.0.1:8082/api/orders?page=1&page_size=1'
+Invoke-RestMethod 'http://127.0.0.1:8082/api/inventory?page=1&page_size=1'
+Invoke-RestMethod 'http://127.0.0.1:8082/api/customers?page=1&page_size=1'
+Invoke-RestMethod http://127.0.0.1:8082/api/fulfillments
+Invoke-RestMethod http://127.0.0.1:8082/api/refunds
+Invoke-RestMethod http://127.0.0.1:8082/api/returns
+```
+
+Open the major React views after API validation. Confirm that visible records identify Shopify as source and that detail/search navigation uses the newly active snapshot. Do not attempt order notes, pause updates, or reset as validation; those are intentionally disabled routes.
+
+### 5. Preserve diagnostics
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8082/api/shopify/sync-runs
+docker compose logs --tail=200 backend
 docker compose ps
 ```
 
-Recent run history is bounded in MongoDB. Error messages must not contain access tokens or client secrets.
+Retain run ID, timestamp, count/validation summary, deployed commit, and **redacted** errors. Do not copy Shopify credentials or complete customer records into incident notes.
 
-## Validation Queries
+## Expected State Transitions
 
-The following API checks are safe and read-only:
+| Phase | `sync_runs` behavior | Active snapshot behavior |
+|---|---|---|
+| Fetching | New run is created with `status: fetching`; progress may update. | Prior active snapshot continues to serve reads. |
+| Staging | Run becomes `staging` after fetch completion. | Prior active snapshot remains current. |
+| Completed | Validation/stored counts pass; metadata and cleanup are recorded. | New `sync_id` becomes active. |
+| Failed | Error category is stored in bounded run metadata; staged canonical rows are removed. | Prior active snapshot remains active. |
 
-```powershell
-Invoke-RestMethod 'http://localhost:8082/api/orders?page=1&page_size=1'
-Invoke-RestMethod 'http://localhost:8082/api/products'
-Invoke-RestMethod 'http://localhost:8082/api/inventory?page=1&page_size=1'
-Invoke-RestMethod 'http://localhost:8082/api/customers?page=1&page_size=1'
-Invoke-RestMethod 'http://localhost:8082/api/fulfillments'
-Invoke-RestMethod 'http://localhost:8082/api/refunds'
-Invoke-RestMethod 'http://localhost:8082/api/returns'
-```
+## Failure Handling
 
-For a release validation, run the repository unit tests, frontend tests and build, and the live HTTP integration suite against a controlled running stack. The integration suite is read-only and verifies that obsolete mutation and reset routes remain disabled.
+| Symptom | Likely cause | Response |
+|---|---|---|
+| `409 A Shopify synchronization is already running` | Existing in-process run holds the lock. | Wait for completion and inspect the newest run; do not force concurrent writes. |
+| `502` with provider/configuration detail | Credentials missing/revoked, source scope issue, provider/network error, or GraphQL failure. | Keep the active snapshot; correct external configuration; retry after diagnosis. |
+| Count mismatch | Source changed during fetch, incomplete traversal, or inaccessible records. | Do not bypass validation. Inspect source scopes/counts and retry after diagnosis. |
+| Missing link validation | Child record references parent not present in fetched snapshot. | Inspect affected entity family/source access; do not activate by manually editing collections. |
+| `/health/ready` is `503` | MongoDB unavailable. | Restore MongoDB connectivity first. |
+| UI still shows prior data after completed run | Browser cache or old frontend bundle. | Hard refresh, check current frontend health/image, then validate API active snapshot directly. |
+| Unexpected live value | Provider source has the value (including missing SKU or unusual inventory quantity). | Verify in Shopify; do not coerce the snapshot to match an assumed UI value. |
 
-## Rollback / Recovery
+## Recovery and Credential Changes
 
-If a synchronization fails before activation, no manual rollback is required: the previous active snapshot remains in use. Inspect the failed run and backend logs, correct the underlying cause, and retry.
+A failed synchronization before activation needs no data rollback. The prior active snapshot is still selected. Do not delete staged/active data manually; the server performs staged cleanup.
 
-If a newly activated snapshot is semantically wrong despite passing validation, stop further synchronizations, preserve the current database and logs, and restore the verified logical backup into a separate recovery database first. Validate the restored database before replacing the active MongoDB volume or database. Do not delete the active volume until recovery is proven.
+If a newly activated snapshot is technically valid but operationally wrong, stop additional synchronization, preserve evidence, and restore a verified logical backup into an isolated recovery database. Validate the recovery copy before replacing production/local active data. The code does not provide a “select previous sync ID” rollback endpoint.
 
-For a failed application deployment, retain `.env` and the MongoDB volume, restore the previous code or image inputs, rebuild, and run `docker compose up -d`. The active snapshot metadata and data remain in the volume.
-
-## Credential Rotation
-
-If a client secret is exposed, revoke or rotate it in Shopify immediately. Update only the untracked local `.env`, then recreate the backend:
+If Shopify credentials are exposed or replaced, rotate/revoke them in Shopify, update only untracked local configuration, recreate the backend, then run a live status check and a complete sync:
 
 ```powershell
 docker compose up -d --force-recreate backend
-Invoke-RestMethod 'http://localhost:8082/api/shopify/status?live=true'
+Invoke-RestMethod 'http://127.0.0.1:8082/api/shopify/status?live=true'
 ```
 
-Never place credentials in documentation, commands committed to Git, screenshots, test fixtures, or logs.
-
-## Common Failures
-
-| Symptom | Likely Cause | Resolution |
-|---|---|---|
-| HTTP 401 from Shopify | Client secret used as an access token, expired token, revoked app, or invalid credentials | Verify client ID/secret configuration; allow the adapter to obtain a fresh token; rotate compromised credentials |
-| HTTP 403 or GraphQL access error | Required Shopify read scope is absent | Update app scopes in Shopify, reinstall/approve if required, then retry |
-| Count mismatch blocks activation | Pagination or Shopify count changed during the run | Inspect the run, retry during lower activity, and investigate repeatable mismatches before changing validation |
-| Missing-link validation error | A child record references a parent outside the fetched snapshot | Inspect affected identifiers and source scopes; do not bypass the validation |
-| Synchronization returns HTTP 409 | Another full synchronization owns the process lock | Wait for the active run to finish and inspect `/api/shopify/sync-runs` |
-| UI shows old bundle | Browser cache retained an older frontend document | Hard-refresh once; confirm the rebuilt frontend container is healthy |
-| Readiness is healthy but live status fails | MongoDB is available, but Shopify is temporarily unavailable or credentials are invalid | Continue using the active snapshot while correcting connectivity; do not purge it |
-| A Shopify value appears surprising | Shopify contains the value, such as negative available inventory or missing SKU | Verify in Shopify; do not silently coerce or invent a replacement |
+Never paste a token or client secret into command history, source control, logs, screenshots, or escalation material.
 
 ## Escalation
 
-Escalate repeated count mismatches, missing-link failures, unauthorized access, or suspected data exposure to the store owner and application operator. Include the synchronization run ID, start and failure timestamps, validation report, affected entity types and Shopify identifiers, backend log excerpt, deployed commit, and backup checksum. **Never include secrets or full customer datasets.**
-
-## References
-
-[1]: https://shopify.dev/docs/apps/build/authentication-authorization/client-secrets "Shopify client credentials"
-[2]: https://shopify.dev/docs/api/usage/pagination-graphql "Shopify GraphQL pagination"
+Escalate repeated provider authorization failures, count mismatches, missing-link validation failures, suspected data exposure, or a bad activated snapshot. Include the sync run ID, start/end timestamps, safe validation report, affected entity family/identifiers, provider status category, deployed commit, redacted backend logs, and backup identifier/checksum when recovery is involved.

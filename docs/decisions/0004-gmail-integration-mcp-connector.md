@@ -1,66 +1,50 @@
-# ADR-0004: Gmail Integration via MCP Connector with AI Reply Generation
+# ADR 0004: Local Google OAuth and Gmail REST workspace
 
-## Status
-
-Accepted
+- **Status:** Accepted
+- **Date:** 2026-08-20
+- **Decision makers:** E-RYDEZ Operations
 
 ## Context
 
-The E-RYDEZ Operations Console requires Gmail integration to enable operators to read, respond
-to, and manage customer emails directly within the application. The existing codebase contains
-a control-plane-only Gmail readiness record (F-009a) but no data-plane implementation.
+The console includes a Gmail workspace that lets an operator inspect customer threads, create an optional AI-assisted reply draft, and send an explicitly confirmed reply inside an existing Gmail thread. The implemented runtime is a Docker Compose backend; it cannot depend on a local interactive CLI or on an external connector to supply application behavior.
 
-Key requirements:
-- Read and display Gmail threads as conversations
-- Generate AI-powered reply drafts based on conversation context
-- Send replies within existing Gmail threads
-- Maintain security (no stored OAuth tokens in the application)
-- Integrate cleanly with the existing FastAPI/React architecture
+The prior decision text described an MCP connector and no stored OAuth tokens. That does not represent the current code. `backend/gmail_service.py` directly uses Google OAuth 2.0 and Gmail REST endpoints, and the application stores an encrypted refresh token in MongoDB.
 
 ## Decision
 
-Implement Gmail integration using the Manus MCP Gmail connector for email operations and the
-built-in OpenAI-compatible LLM proxy for AI reply generation.
+Implement Gmail access through Google OAuth 2.0 authorization-code flow and Gmail REST HTTP calls in `backend/gmail_service.py`. Use the Gmail read-only and send scopes. Keep client credentials and the Fernet encryption key in environment variables; persist only Fernet-encrypted refresh-token ciphertext, safe mailbox metadata, state hashes, and refresh timestamps in MongoDB.
 
-Architecture:
-1. **Gmail access**: The `gmail_service.py` module calls the MCP Gmail connector tools
-   (`gmail_search_messages`, `gmail_read_threads`, `gmail_send_messages`) via subprocess.
-   Authentication is managed externally by the MCP connector — no OAuth tokens are stored
-   in the application database or environment.
-
-2. **AI reply generation**: Uses the built-in LLM proxy (`gpt-5-mini`) to generate
-   contextually appropriate reply drafts. The model receives only message content (sender,
-   subject, body) — never credentials or internal system data.
-
-3. **API layer**: New FastAPI endpoints under `/api/gmail/` expose thread listing, thread
-   reading, AI draft generation, and sending. These follow the existing API patterns
-   (JSON responses, HTTPException for errors, no stored state beyond what Gmail provides).
-
-4. **Frontend**: A new `GmailInbox` page with a mail-program-like UI (thread list + detail
-   view + composer). AI drafts are fully editable and require explicit two-step confirmation
-   before sending.
-
-5. **Send safety**: Sending requires (a) user editing/confirming the draft in the UI,
-   (b) explicit "Senden vorbereiten" → "Jetzt senden" two-click confirmation, and
-   (c) the MCP connector's own interactive confirmation prompt.
-
-## Consequences
-
-- No OAuth credentials are stored in the application; Gmail access depends on the MCP
-  connector being configured and authenticated externally.
-- The application cannot perform background Gmail sync or webhook-based real-time updates;
-  email data is fetched on-demand when the user views the inbox.
-- AI-generated drafts may contain placeholder text (e.g., "[Tracking-Nummer]") when
-  factual information is unavailable; the system never fabricates data.
-- The `openai` Python package is added as a runtime dependency.
-- The existing F-009a control-plane readiness record remains intact; this implementation
-  supersedes the "not implemented" status for Gmail data operations.
+Fetch Gmail threads on demand. Do not implement Gmail push watch, Pub/Sub, webhook processing, scheduled polling, durable thread/message mirroring, or attachment download. HTML email content must be server-sanitized before it reaches the browser. Replies must be sent only within an existing source thread and derive recipient, subject, and threading headers server-side.
 
 ## Alternatives Considered
 
-1. **Google OAuth with stored tokens**: Rejected due to complexity of token refresh,
-   security risk of stored credentials, and the availability of the MCP connector.
-2. **Gmail API via Google Python SDK**: Would require OAuth setup, token storage, and
-   refresh logic. The MCP connector provides equivalent functionality with external auth.
-3. **Polling/webhook sync to MongoDB**: Rejected for 1.0; on-demand fetching is simpler
-   and avoids background process management in the trusted-LAN deployment model.
+| Alternative | Benefits | Drawbacks | Outcome |
+|---|---|---|---|
+| Direct Google OAuth + Gmail REST with encrypted local refresh token | Works in the deployed backend, explicit lifecycle, on-demand read/send, no external runtime connector | Requires OAuth client setup, secure key handling, and token-recovery procedure | Chosen |
+| MCP/CLI connector with externally managed authorization | Moves some token handling out of the app | Not the current application architecture; unsuitable as an internal Compose runtime dependency | Rejected |
+| Gmail Python SDK | Provider-supported abstraction | Adds an additional SDK dependency without capability needed beyond direct REST implementation | Rejected |
+| Gmail watch/webhook/background sync | More timely updates | Requires public callback/message infrastructure, retry/idempotency, retention, and operational monitoring | Deferred; not implemented |
+| Browser-provided recipient/subject on send | Simpler client request | Header injection and mismatched-thread risk | Rejected |
+
+## Consequences
+
+The application holds sensitive OAuth refresh-token ciphertext in MongoDB. Backups, volume access, the encryption key, and client credentials therefore need the same operational protection as other credentials. A successful OAuth connection does not make the integration public or multi-tenant; it represents one local `gmail-local` connection record.
+
+Thread lists may become stale between operator refreshes because no background synchronizer exists. AI draft capability is optional and independent of Gmail read/send capability. Gmail provider failure, expired authorization, or a paused lifecycle state must produce safe errors without exposing tokens or raw provider response bodies.
+
+## Risks and Mitigations
+
+| Risk | Mitigation in implementation | Remaining limitation |
+|---|---|---|
+| OAuth CSRF/state replay | Random state value is stored only as a SHA-256 hash and expires after ten minutes; callback consumes it once. | No user/session-specific application authentication layer exists. |
+| Refresh-token disclosure | Refresh token is Fernet-encrypted before persistence; public API serializers omit token fields. | Security depends on the environment encryption key and host/database access controls. |
+| Unsafe formatted email | Server allow-list sanitizes HTML and URLs before returning `htmlBody`. | Email body content may still contain untrusted text requiring normal operator judgment. |
+| Accidental/misdirected send | UI has two-step confirmation; server reloads thread and derives recipient/subject/reply headers. | An operator-confirmed send remains an irreversible external action. |
+| Uncontrolled mailbox retention | No raw thread/message persistence and no attachment download endpoint. | Safe metadata and encrypted refresh token remain until disconnect or database recovery procedure. |
+| Hidden provider automation claim | On-demand calls only; no watch/webhook/scheduler code path. | Operator must refresh manually. |
+
+## Implementation Notes
+
+Gmail route definitions are in `backend/server.py`; provider logic is in `backend/gmail_service.py`; the client workspace is `frontend/src/pages/GmailInbox.jsx`; and the browser boundary is `frontend/src/lib/api.js`. The precise interface contract is in [`../contracts/gmail.md`](../contracts/gmail.md), and configuration/recovery steps are in [`../runbooks/gmail-workspace.md`](../runbooks/gmail-workspace.md).
+
+Any change to scopes, token encryption/persistence, send behavior, HTML sanitization, background access, attachment retrieval, or provider exposure requires a security review, updated tests/contracts/runbooks, and a new or amended decision record.

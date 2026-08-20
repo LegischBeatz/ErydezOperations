@@ -1,45 +1,46 @@
-# ADR 0005: Flüchtige operative Hinweise für KI-E-Mail-Entwürfe
+# ADR 0005: Ephemeral bounded operator guidance for AI email drafts
 
-**Status:** Akzeptiert
-**Datum:** 2026-08-19
+- **Status:** Accepted
+- **Date:** 2026-08-20
+- **Decision makers:** E-RYDEZ Operations
 
-## Kontext
+## Context
 
-Bei einzelnen Kundenanfragen reicht der bisherige Gesprächsverlauf nicht aus, um einen fachlich passenden Antwortentwurf zu erzeugen. Mitarbeitende benötigen deshalb eine Möglichkeit, situationsbezogene Informationen, gewünschte Tonalität oder ausdrücklich noch offene Fragen für genau einen KI-Entwurf bereitzustellen.
+A customer thread may not contain all immediately relevant operational context for a useful reply draft. The Gmail workspace therefore allows an operator to provide concise, per-draft guidance such as preferred tone, an open question, or an information request. That guidance can be sensitive and must not silently become persistent customer communication data or override the application’s truthfulness and send-safety rules.
 
-Die Hinweise können geschäftlich sensibel sein. Sie dürfen daher weder unbemerkt als E-Mail-Inhalt versendet noch als dauerhafter Kommunikationsbestandteil gespeichert werden. Gleichzeitig dürfen sie die Vorgaben gegen Halluzinationen, unbestätigte Zusagen oder irreführende Aussagen nicht außer Kraft setzen.
+## Decision
 
-## Entscheidung
+The Gmail composer provides an optional operator-guidance field limited to 500 characters. The browser stores it only in the active component state and submits it only to `POST /api/gmail/threads/{thread_id}/ai-reply`. The backend bounds it again to 500 characters and places it in a clearly delimited section of the AI draft prompt.
 
-Der Gmail-Composer enthält ein optionales Textfeld **„Hinweise für die KI“** mit einer Begrenzung von 500 Zeichen. Die Eingabe wird ausschließlich bei der nächsten KI-Entwurfserstellung an den bestehenden Antwortendpunkt übergeben.
+Guidance is business context, not higher-priority instruction authority. The draft prompt retains its rules to use only the supplied conversation, respond in the selected/detected language, avoid invented facts or commitments, use placeholders for unverified information, and return only an editable plain-text email body. Draft generation never sends a message.
 
-Der Client hält die Hinweise nur im lokalen Komponentenstatus. Der Backend-Service verwendet sie als abgegrenzten, operativen Kontext innerhalb des KI-Prompts. Der Kontext wird auf 500 Zeichen begrenzt und ausdrücklich den übergeordneten Wahrheits-, Sicherheits- und Sprachregeln untergeordnet. Er wird nicht in der E-Mail versendet, nicht in MongoDB gespeichert und nach einem erfolgreichen Versand aus dem Composer entfernt.
+## Alternatives Considered
 
-Die Ergebnisansicht markiert nachvollziehbar, dass operative Hinweise berücksichtigt wurden, ohne den vollständigen Hinweis als E-Mail-Metadatum offenzulegen.
+| Alternative | Benefits | Drawbacks | Outcome |
+|---|---|---|---|
+| Ephemeral 500-character guidance per draft | Allows task-specific context with bounded exposure and no persistence model | Requires operator re-entry for a new draft/thread | Chosen |
+| Persist guidance in MongoDB or as reusable templates | Reusable historical context | Adds retention, deletion, access-control, and audit requirements absent from current design | Rejected |
+| Unlimited free-form prompt field | Maximum flexibility | Increases sensitive-context exposure, prompt-injection surface, and unpredictable drafts | Rejected |
+| Fully automatic AI reply/send | Faster apparent workflow | Removes required operator review and can create uncontrolled external communication | Rejected |
 
-## Konsequenzen
+## Consequences
 
-| Bereich | Konsequenz |
-|---|---|
-| Bedienung | Nutzer können einen KI-Entwurf präzise steuern, ohne den Entwurf nachträglich vollständig umschreiben zu müssen. |
-| Datenschutz | Hinweise bleiben flüchtig und werden nicht Teil der gespeicherten Gmail-Verbindungsdaten oder des versendeten Inhalts. |
-| Sicherheit | Begrenzung, Kontextabgrenzung und Priorisierung der übergeordneten Regeln reduzieren das Risiko widersprüchlicher oder irreführender Anweisungen. |
-| Nachvollziehbarkeit | Die UI zeigt, dass ein Hinweis berücksichtigt wurde; Nutzer prüfen und bearbeiten den Entwurf weiterhin vor dem Versand. |
-| Betrieb | Es entstehen keine zusätzlichen Datenbankmigrationen oder Hintergrundprozesse. |
+AI output is advisory. The operator sees an editable draft, information about the context used, and a review disclaimer. The final send action is a separate two-step UI flow and a server-side source-thread-derived Gmail reply. Guidance is cleared from the composer after a successful send and when the selected thread changes.
 
-## Alternativen
+The draft context itself is bounded: the service uses up to the latest 20 normalized messages, truncates individual message bodies, and caps aggregate context. This limits provider exposure but does not replace operator judgment. The optional AI provider may be unavailable without preventing manual Gmail replies.
 
-Eine dauerhafte Speicherung von Hinweisvorlagen oder historisierten Entwurfsanweisungen wurde nicht gewählt. Sie würde zusätzliche Aufbewahrungs-, Lösch- und Berechtigungskonzepte erfordern und war für den konkreten Einzelfall-Workflow nicht notwendig.
+## Risks and Mitigations
 
-Ein freies, unbegrenztes Promptfeld wurde ebenfalls verworfen. Es erschwert die Bedienung, erhöht das Risiko für Prompt-Injection und würde unnötig viel Kontext an den KI-Anbieter übermitteln.
+| Risk | Mitigation in implementation | Remaining limitation |
+|---|---|---|
+| Guidance contains sensitive information | Browser-only transient state; no MongoDB field or sent-message injection of the raw guidance. | The text is sent to the configured AI provider during the one draft request. |
+| Guidance attempts to override safety constraints | Prompt explicitly makes it subordinate to truth, language, and safety rules. | Model behavior still requires operator review. |
+| Hallucinated operational promises | Prompt forbids invented delivery times, tracking values, prices, and commitments; asks for placeholders. | A draft is not a verified source of truth. |
+| Accidental AI-triggered external action | AI endpoint only returns data; UI preserves explicit two-step send confirmation. | Operator may still intentionally send an edited draft. |
+| Excessive provider context | 500-character guidance and bounded conversation context. | No configurable per-user policy or DLP layer exists. |
 
-## Validierung
+## Implementation Notes
 
-Die Funktion wurde mit einem realen Gmail-Thread und einem situationsbezogenen Testhinweis validiert. Der resultierende englische Entwurf übernahm die geforderte technische Einschränkung sowie die Bitte um Bestellnummer oder VIN. Die Oberfläche zeigte den Hinweis-Status und blieb vor einer Zustellung in der zweistufigen Versandbestätigung stehen.
+The UI field and confirmation behavior are in `frontend/src/pages/GmailInbox.jsx`. `backend/gmail_service.py` constructs the bounded prompt and returns `draft`, `facts_used`, `language`, `model`, and a review disclaimer. The API and operating contract are documented in [`../contracts/gmail.md`](../contracts/gmail.md) and [`../runbooks/gmail-workspace.md`](../runbooks/gmail-workspace.md).
 
-## Referenzen
-
-[1]: https://developers.google.com/identity/protocols/oauth2/web-server "Google OAuth 2.0 for Web Server Applications"
-[2]: https://platform.openai.com/docs/guides/prompt-engineering "OpenAI Prompt Engineering Guide"
-
-[1] [2]
+Do not change the guidance limit, persistence boundary, provider payload, or send relationship without reviewing privacy, prompt-safety, and Gmail side-effect implications.

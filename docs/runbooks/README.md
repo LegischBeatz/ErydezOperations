@@ -1,48 +1,48 @@
-# Runbooks
+# Operations Runbooks
 
-## Purpose
+## Scope
 
-This directory contains trusted-LAN Docker deployment, Shopify synchronization, backup, recovery, and validation procedures for the E‑RYDEZ Operations Console. Shopify is the operational source of truth; MongoDB contains the validated canonical read model.
+These runbooks operate the current Docker Compose implementation of E-RYDEZ Operations Console. The system is a local, unauthenticated HTTP application with Shopify-authoritative commerce snapshots and an optional OAuth-backed Gmail workspace. Read [`../../PROJECT.md`](../../PROJECT.md) and [`../../docs/architecture.md`](../../docs/architecture.md) before operational work.
 
-- [Shopify snapshot synchronization](shopify-synchronization.md)
+| Procedure | Use it when |
+|---|---|
+| [Shopify snapshot synchronization](shopify-synchronization.md) | A snapshot must be created, refreshed, diagnosed, or recovered. |
+| [Gmail workspace](gmail-workspace.md) | Configuring Google OAuth, connecting/disconnecting Gmail, handling Gmail states, or diagnosing AI draft availability. |
 
 ## Security Boundary
 
-The stack serves unauthenticated plain HTTP. Run it only on a trusted LAN or VPN. Do not port-forward it or expose it through a public proxy until application authentication, authorization, and TLS are implemented. The database contains real customer and order data; restrict host, filesystem, backup, Docker, and browser access accordingly.
+The Compose frontend publishes plain HTTP only to `127.0.0.1:${ERYDEZ_PORT:-8082}`. There is no application login, authorization, TLS, tenant boundary, reverse-proxy access policy, or public-access design. Do not change the bind address, port-forward the service, or publish it through a public proxy without an explicit security implementation and reviewed decision record.
 
-MongoDB and FastAPI must not publish host ports. Nginx is the only published service and proxies same-origin `/api` requests. Credentials belong only in the untracked `.env` and must never appear in Git, logs, screenshots, tests, or documentation.
+Shopify snapshots can contain customer and commerce data. Gmail authorization data includes an encrypted refresh token. Keep `.env`, Docker/host access, browser access, MongoDB volume access, container logs, and backups restricted to approved operators. Never put secrets, OAuth codes, raw provider payloads, or customer exports in source control, issue text, screenshots, or support artifacts.
 
-## Docker Compose Deployment
+## Prerequisites and Configuration
 
-### Prerequisites
+| Requirement | Implemented expectation |
+|---|---|
+| Container runtime | Docker Compose plugin. Windows onboarding assumes Docker Desktop with Linux containers and WSL2. |
+| Repository configuration | A local, untracked `.env` based on `.env.example`. |
+| Required Compose values | `MONGO_ROOT_PASSWORD`, `SHOPIFY_STORE_DOMAIN`, `SHOPIFY_CLIENT_ID`, and `SHOPIFY_CLIENT_SECRET` must be non-empty for Compose interpolation. |
+| Optional Gmail values | Google OAuth client ID/secret, exact redirect URI, and a valid Fernet key are needed only to use Gmail OAuth. |
+| Optional AI values | `OPENAI_API_KEY` enables AI drafts only; Gmail manual reading/replying does not depend on it. |
+| Network | The backend needs outbound provider access for Shopify sync, Google OAuth/Gmail operations, and optional draft generation. |
 
-| Requirement | Windows | Linux/macOS |
-|---|---|---|
-| Container runtime | Docker Desktop with WSL2 and Linux containers | Docker Engine or Docker Desktop |
-| Compose | Docker Compose plugin | Docker Compose plugin |
-| Operator shell | PowerShell 5.1+ or PowerShell 7 | POSIX shell |
-| Network | Trusted LAN/VPN access to configured frontend port | Trusted LAN/VPN access to configured frontend port |
+Use `.env.example` as the variable-name contract. Do not copy real values into documentation. `docker compose config --quiet` validates Compose interpolation and structure but does not prove provider credentials, scopes, or network reachability.
 
-### Configuration
+## Start and Update
 
-Copy `.env.example` to the untracked `.env`, generate a strong URL-safe MongoDB password, and configure the permanent Shopify `*.myshopify.com` domain plus the client ID and client secret. The adapter obtains short-lived access tokens through Shopify’s client-credentials flow.[1]
+### Windows
 
-Required backend variables are documented in [`docs/contracts/README.md`](../contracts/README.md). Do not include `https://`, `/admin`, or a custom storefront domain in `SHOPIFY_STORE_DOMAIN`.
-
-### Start or Update
-
-On Windows, Docker Desktop is a prerequisite and is not installed by the repository helper:
+Start Docker Desktop and verify `docker info` plus `docker compose version`. From the repository root, run:
 
 ```powershell
-docker --version
-docker compose version
-docker info
 .\scripts\setup-windows.ps1
 ```
 
-The helper preserves an existing `.env`, validates Compose, builds images, starts the stack, and checks frontend, liveness, and readiness.
+The script creates `.env` only if it does not exist, generates a MongoDB password only for that new file, performs Compose validation, builds unless `-SkipBuild` is selected, starts the stack, and polls three local health URLs. Use `-Port 8085` or another free loopback port when `8082` is occupied. Complete the required Shopify values in the local `.env` before running it.
 
-For a standard update on any supported host:
+### Linux and macOS
+
+Prepare the local `.env`, then validate, build, and start the packaged stack:
 
 ```bash
 docker compose config --quiet
@@ -51,73 +51,77 @@ docker compose up -d
 docker compose ps
 ```
 
-Open `http://localhost:8082` on the host, or use the configured `ERYDEZ_PORT`. Only the frontend port should appear under published ports.
+The default console URL is `http://127.0.0.1:8082`. A custom local port is set by `ERYDEZ_PORT` in `.env` or the invoking environment.
 
-### Operate
+### Health Verification
 
 ```bash
-docker compose ps
-docker compose logs --tail=200 frontend backend mongodb
+curl -fsS http://127.0.0.1:8082/healthz
 curl -fsS http://127.0.0.1:8082/api/health/live
 curl -fsS http://127.0.0.1:8082/api/health/ready
+docker compose ps
 ```
 
-Stop containers without deleting MongoDB data:
+| Check | What it proves | What it does not prove |
+|---|---|---|
+| `/healthz` | Nginx is serving the frontend container. | SPA route/data correctness. |
+| `/api/health/live` | FastAPI process responds. | MongoDB, Shopify, Gmail, or snapshot readiness. |
+| `/api/health/ready` | MongoDB ping succeeds and reports active-snapshot boolean. | Live Shopify configuration/reachability. |
+| `docker compose ps` | Compose health/restart state. | Current provider authorization or snapshot validity. |
+
+A fresh stack can report `ready` with `shopify_snapshot_active: false`. In that state, canonical commerce routes return `503` until a successful Shopify synchronization is activated.
+
+## Routine Operation
+
+The Settings page exposes the complete Shopify sync action, current snapshot state, run history, safe integration readiness controls, and Gmail control-plane evidence. The application shell also exposes Shopify sync and active-snapshot status.
+
+Use the read-only endpoints below for safe diagnostics; do not use them as a substitute for the documented provider workflow.
+
+```bash
+curl -fsS 'http://127.0.0.1:8082/api/shopify/status?live=false'
+curl -fsS http://127.0.0.1:8082/api/shopify/sync-runs
+curl -fsS 'http://127.0.0.1:8082/api/orders?page=1&page_size=1'
+curl -fsS http://127.0.0.1:8082/api/gmail/status
+```
+
+Use `live=true` on Shopify status only when an operator intends to contact Shopify and provider credentials are configured. It performs a live provider profile/count query.
+
+Stop the stack without deleting application data:
 
 ```bash
 docker compose stop
 docker compose down
 ```
 
-Never pass `--volumes` unless permanent deletion of Compose-managed application data is explicitly intended and a verified backup exists.
+`docker compose down --volumes` deletes the Compose-managed MongoDB volume. Do not run it unless permanent data removal is intended and an independently verified backup exists.
 
-## Shopify Synchronization
+## Backup, Recovery, and Rollback
 
-Run synchronization from **Settings → Shopify integration → Run complete sync** or call `POST /api/shopify/sync`. The application stages and validates a complete snapshot before activation; the previous snapshot remains active if the run fails.
+The repository does not ship a backup scheduler, retention policy, or restore script. A Docker volume is persistent storage, **not** a backup. Before destructive maintenance, schema work, or manual database recovery, create a logical MongoDB backup with an operator-approved MongoDB backup tool, store it outside the repository and Compose volume, record an integrity checksum, and prove restoration against an isolated temporary database.
 
-Use the dedicated [Shopify synchronization runbook](shopify-synchronization.md) for prerequisites, validation, rollback, credential rotation, and failure handling. The former mock reset endpoint is permanently disabled and returns HTTP 410.
+| Situation | Safe response |
+|---|---|
+| Shopify synchronization fails before activation | Do not manually purge collections. The implementation leaves the previous snapshot active and removes failed staged rows. Inspect run record and backend logs, then follow the Shopify runbook. |
+| New active snapshot appears semantically wrong | Stop further syncs, preserve current database/log evidence, restore the last verified logical backup into a separate recovery database first, and validate it before replacing the active database. |
+| Code/image deployment fails | Keep `.env` and MongoDB volume. Restore the previously known code/image input, rebuild, start Compose, and validate health before further action. |
+| Gmail authorization is invalid | Use the Gmail workspace runbook to reauthorize or disconnect; never manually decrypt/edit token documents. |
+| Credential exposure is suspected | Restrict access, rotate affected provider credentials or encryption key according to a reviewed recovery plan, preserve minimal redacted evidence, and notify the system owner. |
 
-## Backup and Restore
+## Local Development and Validation
 
-Before schema migrations or destructive cleanup, create a logical `mongodump --archive --gzip` backup and store it outside the repository. Record a SHA-256 checksum and test the corresponding `mongorestore` procedure against a separate disposable Compose project. A Docker volume is not a backup.
-
-Do not overwrite or delete the active database during recovery until the restored copy has passed canonical count, source, uniqueness, and cross-link validation.
-
-## Deployment Validation
-
-```bash
-curl -fsS http://127.0.0.1:8082/healthz
-curl -fsS http://127.0.0.1:8082/api/health/live
-curl -fsS http://127.0.0.1:8082/api/health/ready
-curl -fsS 'http://127.0.0.1:8082/api/shopify/status?live=true'
-curl -fsS http://127.0.0.1:8082/orders
-```
-
-All services must be healthy, readiness must report an active snapshot, live order/product/customer counts must match the active snapshot, and the `/orders` route must return the React application.
-
-## Local Development
-
-### Backend
-
-Configure `MONGO_URL`, `DB_NAME`, `CORS_ORIGINS`, and Shopify variables, then run:
+The packaged Compose deployment is the operational path. Separate development processes are supported by the code but require explicit local configuration.
 
 ```bash
+# Backend: MONGO_URL and DB_NAME are required before importing server.py.
 cd backend
 uvicorn server:app --reload --host 0.0.0.0 --port 8001
+
+# Frontend: point to the backend origin without /api for separate dev servers.
+cd ../frontend
+REACT_APP_BACKEND_URL=http://localhost:8001 npm start
 ```
 
-### Frontend
-
-Set `REACT_APP_BACKEND_URL` to the API origin for separate development, then run:
-
-```bash
-cd frontend
-npm start
-```
-
-Production uses a blank frontend backend URL and same-origin `/api` proxying.
-
-### Tests and Builds
+Run the available project checks from a controlled environment:
 
 ```bash
 python3 -m compileall -q backend
@@ -126,29 +130,26 @@ cd ../frontend && npm test -- --watchAll=false
 npm run build
 ```
 
-The backend suite contains service-independent canonical tests and live HTTP integration tests. Run the live suite only against a controlled stack; it is read-only and confirms that obsolete mock mutations remain disabled. `backend/pytest.ini` controls xdist defaults; use `pytest -n 0` for serial troubleshooting without editing the configuration.
+`backend/pytest.ini` fixes pytest-xdist at `-n 2 --dist loadscope`; retain it. The backend suite includes service-independent unit tests and HTTP tests that expect a controlled API at `REACT_APP_BACKEND_URL` or `http://localhost:8001` with an active snapshot. Do not point those HTTP tests at an environment with data that must be retained. Use `pytest -n 0` only for serial isolation troubleshooting.
+
+No repository-defined frontend lint script or TypeScript type-check command exists. The current frontend is JavaScript/JSX; `npm run build` is the available compile/build validation.
 
 ## Common Failures
 
-| Symptom | Likely Cause | Resolution |
+| Symptom | Likely cause | Safe action |
 |---|---|---|
-| API import fails for `MONGO_URL` or `DB_NAME` | Required backend environment is missing | Set both variables before starting Uvicorn. |
-| Browser requests target `undefined/api` | Development frontend API origin is missing | Set `REACT_APP_BACKEND_URL` and restart the development server. |
-| Browser reports CORS errors | Development origin is absent from `CORS_ORIGINS` | Add the exact origin and restart the API. |
-| Compose rejects configuration | A required password or Shopify variable is blank | Correct the untracked `.env`; rerun `docker compose config --quiet`. |
-| Shopify status reports unauthorized | Invalid/revoked client credentials or wrong token mode | Verify app credentials, rotate exposed secrets, and recreate the backend. |
-| Full sync fails count or link validation | Incomplete fetch, scope issue, or source changed during the run | Keep the old snapshot active; inspect sync history/logs and retry only after diagnosis. |
-| A Shopify value appears negative or unavailable | The live source contains that state | Verify in Shopify; do not coerce or invent a replacement. |
-| Old frontend remains visible | Cached application document or old container | Hard-refresh and confirm the current frontend container/image. |
-| Readiness returns HTTP 503 | MongoDB is unavailable | Restore MongoDB connectivity; readiness recovers when persistence returns. |
-| Port `8082` is allocated | Another service owns the port | Stop the conflict or set a different `ERYDEZ_PORT`. |
+| `docker compose config` rejects configuration | Required `.env` value is blank, often MongoDB password or Shopify settings. | Correct the untracked local configuration; do not place values in versioned files. |
+| `/api/health/ready` is `503` | MongoDB unavailable or credentials/network wrong inside Compose. | Inspect `docker compose ps` and redacted `docker compose logs --tail=200 mongodb backend`. |
+| Commerce route returns `503` while readiness is healthy | No active Shopify snapshot. | Complete a valid Shopify sync; do not use legacy seed data. |
+| Sync returns `409` | Another sync owns the process-local lock. | Wait and inspect `/api/shopify/sync-runs`. |
+| Sync returns `502` or validation failure | Shopify credential/scope/network failure or incomplete/inconsistent provider snapshot. | Preserve current active snapshot; inspect safe run/log evidence; use the Shopify runbook. |
+| Browser calls `undefined/api` | Separate frontend development lacks `REACT_APP_BACKEND_URL`. | Set the backend origin and restart the frontend dev server. |
+| Browser sees CORS failure in separate development | Browser origin absent from `CORS_ORIGINS`. | Add the exact development origin and restart backend; production uses same-origin proxying. |
+| Gmail reports configuration required | OAuth client variables, redirect URI, or Fernet key missing/invalid. | Configure local environment precisely; see Gmail runbook. |
+| Gmail reports `401` | Refresh token absent, expired, invalid, or revoked. | Reauthorize through browser OAuth. |
+| Gmail access reports `409` | Local lifecycle is paused/disconnect pending/disconnected. | Resolve lifecycle through Settings before retrying. |
+| AI drafts unavailable | No optional API key, invalid key, provider error, or quota exhaustion. | Use manual reply or resolve optional AI configuration; do not bypass Gmail confirmation. |
 
-## Recovery and Escalation
+## Escalation Record
 
-For a failed synchronization, preserve the active snapshot and inspect the failed run; do not manually purge data. For a failed code deployment, retain `.env` and the MongoDB volume, restore the previous code or image inputs, rebuild, and start the stack. For suspected credential or customer-data exposure, rotate credentials, restrict access, preserve audit evidence, and escalate to the store owner immediately.
-
-Include run ID, timestamps, validation report, affected Shopify identifiers, deployed commit, relevant redacted log lines, and backup checksum in escalation material. Never include secrets or bulk customer data.
-
-## References
-
-[1]: https://shopify.dev/docs/apps/build/authentication-authorization/client-secrets "Shopify client credentials"
+When escalating, include only the minimum safe operational evidence: deployed commit, timestamps, affected route or run ID, snapshot validation summary, provider status category, container status, and relevant **redacted** log lines. For recovery work include backup location identifier and checksum, never the archive contents. Do not include credentials, OAuth state/code/token values, full Gmail messages, or customer-data extracts.
