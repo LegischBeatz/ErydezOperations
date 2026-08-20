@@ -253,7 +253,7 @@ export default function AppShell() {
         </nav>
         {!sidebarCompact && (
           <div className="border-t border-line p-3 text-[11px] text-inkmed">
-            <div className="flex items-center gap-1.5"><Store size={12} /> Shopify is the source of truth</div>
+            <div className="flex items-center gap-1.5"><Store size={12} /> {t("Shopify is the source of truth")}</div>
             <p className="mt-1 truncate">{status?.store_domain || "Not configured"}</p>
           </div>
         )}

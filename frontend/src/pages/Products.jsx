@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import useSWR from "swr";
 import { api } from "@/lib/api";
 import { money, statusLabel } from "@/lib/shopify";
-import { EmptyState, PageHeader, StatusChip } from "@/components/common";
+import { EmptyState, interactiveRowProps, PageHeader, StatusChip, TableOverflowHint } from "@/components/common";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Search, ShoppingBag } from "lucide-react";
@@ -35,15 +35,16 @@ export default function Products() {
           </select>
         </div>
       </PageHeader>
-      <div className="p-6">
+      <div className="p-4 sm:p-6">
         {isLoading ? <Skeleton className="h-[520px] w-full" /> : error ? <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-danger">Unable to load Shopify products.</div> : !products?.length ? <EmptyState title="No matching Shopify products" /> : (
           <div className="overflow-hidden rounded-lg border border-line bg-surface">
+            <TableOverflowHint id="products-table-scroll-hint" />
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[980px] text-left">
+              <table className="w-full min-w-[980px] text-left" aria-describedby="products-table-scroll-hint">
                 <thead className="border-b border-line bg-subtle/70 text-[11px] uppercase tracking-wide text-inkmed"><tr><th className="px-4 py-2.5">Product</th><th className="px-3 py-2.5">Status</th><th className="px-3 py-2.5">Vendor / type</th><th className="px-3 py-2.5 text-right">Variants</th><th className="px-3 py-2.5 text-right">Price range</th><th className="px-3 py-2.5 text-right">Total inventory</th><th className="px-3 py-2.5">Availability</th></tr></thead>
                 <tbody className="divide-y divide-line">
                   {products.map((product) => (
-                    <tr key={product.shopify_id} onClick={() => navigate(`/products/${product.id}`)} className="cursor-pointer hover:bg-subtle/60" data-testid={`product-row-${product.id}`}>
+                    <tr key={product.shopify_id} onClick={() => navigate(`/products/${product.id}`)} {...interactiveRowProps(() => navigate(`/products/${product.id}`), `Open details for ${product.title}`)} className="cursor-pointer transition-colors duration-150 hover:bg-subtle/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand" data-testid={`product-row-${product.id}`}>
                       <td className="px-4 py-3"><div className="flex items-center gap-3">{product.featured_image?.url ? <img src={product.featured_image.url} alt={product.featured_image.alt || product.title} className="h-12 w-12 rounded-md border border-line object-cover" loading="lazy" /> : <div className="flex h-12 w-12 items-center justify-center rounded-md bg-subtle text-inkmed"><ShoppingBag size={17} /></div>}<div className="min-w-0"><p className="max-w-md truncate text-sm font-semibold">{product.title}</p><p className="truncate text-xs text-inkmed">/{product.handle}</p></div></div></td>
                       <td className="px-3 py-3"><StatusChip value={statusLabel(product.status)} /></td>
                       <td className="px-3 py-3"><p className="text-sm">{product.vendor || "—"}</p><p className="text-xs text-inkmed">{product.product_type || "No product type"}</p></td>

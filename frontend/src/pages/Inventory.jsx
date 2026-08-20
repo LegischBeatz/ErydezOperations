@@ -4,7 +4,7 @@ import useSWR from "swr";
 import { api } from "@/lib/api";
 import { fmtDateTime } from "@/lib/format";
 import { customerName, money } from "@/lib/shopify";
-import { EmptyState, FactList, PageHeader, StatusChip } from "@/components/common";
+import { EmptyState, FactList, interactiveRowProps, PageHeader, StatusChip, TableOverflowHint } from "@/components/common";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -33,26 +33,27 @@ export default function Inventory() {
   return (
     <div data-testid="inventory-page">
       <PageHeader title="Inventory" freshness={data ? `${data.total} Shopify inventory items · quantities are location-aware` : "Loading Shopify inventory…"}>
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <div className="relative min-w-[280px] flex-1 md:max-w-md"><Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-inkmed" /><Input value={q} onChange={(event) => update({ q: event.target.value })} placeholder="Product, variant or SKU…" className="h-9 pl-9" /></div>
-          <label className="flex h-9 items-center gap-2 rounded-md border border-line bg-surface px-3 text-sm"><input type="checkbox" checked={lowStock} onChange={(event) => update({ low_stock: event.target.checked ? "true" : "" })} /> Tracked with ≤ 3 available</label>
+        <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-center">
+          <div className="relative min-w-0 sm:col-span-2 lg:min-w-[280px] lg:flex-1 lg:max-w-md"><Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-inkmed" /><Input value={q} onChange={(event) => update({ q: event.target.value })} placeholder="Product, variant or SKU…" className="h-9 pl-9" /></div>
+          <label className="flex min-h-9 items-center gap-2 rounded-md border border-line bg-surface px-3 py-2 text-sm transition-colors duration-150 hover:bg-subtle"><input type="checkbox" checked={lowStock} onChange={(event) => update({ low_stock: event.target.checked ? "true" : "" })} className="h-4 w-4 rounded border-line text-brand focus:ring-brand" /> Tracked with ≤ 3 available</label>
         </div>
       </PageHeader>
 
-      <div className="p-6">
+      <div className="p-4 sm:p-6">
         {isLoading && !data ? <Skeleton className="h-[520px] w-full" /> : error ? <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-danger">Unable to load Shopify inventory.</div> : !data?.items?.length ? <EmptyState title="No matching Shopify inventory items" /> : (
           <div className="overflow-hidden rounded-lg border border-line bg-surface">
+            <TableOverflowHint id="inventory-table-scroll-hint" />
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1080px] text-left">
+              <table className="w-full min-w-[1080px] text-left" aria-describedby="inventory-table-scroll-hint">
                 <thead className="border-b border-line bg-subtle/70 text-[11px] uppercase tracking-wide text-inkmed"><tr><th className="px-4 py-2.5">Product / variant</th><th className="px-3 py-2.5">SKU</th><th className="px-3 py-2.5">Tracking</th>{QUANTITIES.map((name) => <th key={name} className="px-3 py-2.5 text-right">{name.replace("_", " ")}</th>)}<th className="px-3 py-2.5">Locations</th></tr></thead>
                 <tbody className="divide-y divide-line">{data.items.map((item) => {
                   const available = Number(item.quantities?.available || 0);
                   const tone = !item.tracked ? "neut" : available <= 0 ? "danger" : available <= 3 ? "warn" : "ok";
-                  return <tr key={item.shopify_id} onClick={() => update({ item: item.id })} className="cursor-pointer hover:bg-subtle/60" data-testid={`inventory-row-${item.id}`}><td className="px-4 py-3"><p className="max-w-sm truncate text-sm font-semibold">{item.product_title || "Unknown product"}</p><p className="truncate text-xs text-inkmed">{item.variant_title || "Default variant"}</p></td><td className="tnum px-3 py-3 text-sm">{item.sku || "—"}</td><td className="px-3 py-3"><StatusChip value={item.tracked ? "Tracked" : "Not tracked"} toneOverride={tone} /></td>{QUANTITIES.map((name) => <td key={name} className={`tnum px-3 py-3 text-right text-sm font-semibold ${name === "available" && tone === "danger" ? "text-danger" : name === "available" && tone === "warn" ? "text-warn" : ""}`}>{item.quantities?.[name] ?? 0}</td>)}<td className="px-3 py-3 text-sm">{item.locations?.map((location) => location.name).filter(Boolean).join(", ") || "—"}</td></tr>;
+                  return <tr key={item.shopify_id} onClick={() => update({ item: item.id })} {...interactiveRowProps(() => update({ item: item.id }), `Open details for ${item.product_title || item.sku || item.id}`)} className="cursor-pointer transition-colors duration-150 hover:bg-subtle/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand" data-testid={`inventory-row-${item.id}`}><td className="px-4 py-3"><p className="max-w-sm truncate text-sm font-semibold">{item.product_title || "Unknown product"}</p><p className="truncate text-xs text-inkmed">{item.variant_title || "Default variant"}</p></td><td className="tnum px-3 py-3 text-sm">{item.sku || "—"}</td><td className="px-3 py-3"><StatusChip value={item.tracked ? "Tracked" : "Not tracked"} toneOverride={tone} /></td>{QUANTITIES.map((name) => <td key={name} className={`tnum px-3 py-3 text-right text-sm font-semibold ${name === "available" && tone === "danger" ? "text-danger" : name === "available" && tone === "warn" ? "text-warn" : ""}`}>{item.quantities?.[name] ?? 0}</td>)}<td className="px-3 py-3 text-sm">{item.locations?.map((location) => location.name).filter(Boolean).join(", ") || "—"}</td></tr>;
                 })}</tbody>
               </table>
             </div>
-            <div className="flex items-center justify-between border-t border-line px-4 py-3"><p className="text-xs text-inkmed">Showing {(data.page - 1) * data.page_size + 1}–{Math.min(data.page * data.page_size, data.total)} of {data.total}</p><div className="flex items-center gap-2"><button disabled={page <= 1} onClick={() => update({ page: String(page - 1) })} className="flex h-8 items-center gap-1 rounded-md border border-line px-2.5 text-xs disabled:opacity-40"><ChevronLeft size={14} /> Previous</button><span className="tnum text-xs text-inkmed">{data.page} / {data.pages}</span><button disabled={page >= data.pages} onClick={() => update({ page: String(page + 1) })} className="flex h-8 items-center gap-1 rounded-md border border-line px-2.5 text-xs disabled:opacity-40">Next <ChevronRight size={14} /></button></div></div>
+            <div className="flex flex-col gap-3 border-t border-line px-4 py-3 sm:flex-row sm:items-center sm:justify-between"><p className="text-xs text-inkmed">Showing {(data.page - 1) * data.page_size + 1}–{Math.min(data.page * data.page_size, data.total)} of {data.total}</p><div className="flex items-center justify-between gap-2 sm:justify-start"><button disabled={page <= 1} onClick={() => update({ page: String(page - 1) })} className="flex h-8 items-center gap-1 rounded-md border border-line px-2.5 text-xs transition-colors duration-150 hover:bg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-40"><ChevronLeft size={14} /> Previous</button><span className="tnum text-xs text-inkmed">{data.page} / {data.pages}</span><button disabled={page >= data.pages} onClick={() => update({ page: String(page + 1) })} className="flex h-8 items-center gap-1 rounded-md border border-line px-2.5 text-xs transition-colors duration-150 hover:bg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-40">Next <ChevronRight size={14} /></button></div></div>
           </div>
         )}
       </div>

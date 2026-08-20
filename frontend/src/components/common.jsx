@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import {
   AlertTriangle, AlertOctagon, CheckCircle2, Info, CircleDashed, Mail, MessageSquare,
-  Phone, Store, Truck, Calendar, Zap, StickyNote, ShieldCheck, Undo2, PackageCheck,
+  Phone, Store, Truck, Calendar, Zap, StickyNote, ShieldCheck, Undo2, PackageCheck, MoveHorizontal,
 } from "lucide-react";
 
 const DANGER = ["critical", "failed", "overdue", "disconnected", "delivery exception", "breached", "critical shortage", "rejected", "exception", "not ready — awaiting stock", "refunded", "cancelled", "voided", "inactive"];
@@ -99,21 +99,44 @@ export const KpiCard = ({ label, value, toneName = "neut", onClick, testId, sub,
 };
 
 export const PageHeader = ({ title, identifier, freshness, status, actions, breadcrumb, children }) => (
-  <div className="sticky top-14 z-20 border-b border-line bg-canvas/95 px-6 py-4 backdrop-blur-sm">
+  <div className="sticky top-14 z-20 border-b border-line bg-canvas/95 px-4 py-4 backdrop-blur-sm sm:px-6">
     {breadcrumb && <div className="mb-1 text-xs text-inkmed">{breadcrumb}</div>}
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <div className="flex items-center gap-3">
+      <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
         <h1 className="text-2xl font-semibold leading-8 text-ink" data-testid="page-title">
           {title} {identifier && <span className="tnum text-inkmed">{identifier}</span>}
         </h1>
         {status}
       </div>
-      <div className="flex items-center gap-2">{actions}</div>
+      <div className="flex flex-wrap items-center gap-2">{actions}</div>
     </div>
     {freshness && <div className="mt-1 text-xs text-inkmed" data-testid="page-freshness">{freshness}</div>}
     {children}
   </div>
 );
+
+export function interactiveRowProps(onActivate, label) {
+  return {
+    tabIndex: 0,
+    "aria-label": label,
+    onKeyDown: (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        onActivate();
+      }
+    },
+  };
+}
+
+export const TableOverflowHint = ({ id, className }) => {
+  const { t } = useT();
+  return (
+    <p id={id} data-testid={`table-overflow-hint-${id}`} className={cn("flex items-center gap-1.5 border-b border-line bg-subtle/50 px-4 py-2 text-xs text-inkmed 2xl:hidden", className)}>
+      <MoveHorizontal size={14} strokeWidth={2} aria-hidden="true" />
+      {t("Scroll horizontally to view all columns")}
+    </p>
+  );
+};
 
 export const EmptyState = ({ title, description, action, testId }) => (
   <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-line bg-surface py-12 text-center" data-testid={testId || "empty-state"}>
