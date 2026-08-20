@@ -2,6 +2,7 @@ import React from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import useSWR from "swr";
 import { api } from "@/lib/api";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { fmtDate } from "@/lib/format";
 import { addressLine, customerDisplayName, money, statusLabel } from "@/lib/shopify";
 import { EmptyState, interactiveRowProps, PageHeader, StatusChip, TableOverflowHint } from "@/components/common";
@@ -14,7 +15,8 @@ export default function Customers() {
   const [params, setParams] = useSearchParams();
   const q = params.get("q") || "";
   const page = Math.max(Number(params.get("page") || 1), 1);
-  const query = { q: q || undefined, page, page_size: 100 };
+  const debouncedQuery = useDebouncedValue(q.trim());
+  const query = { q: debouncedQuery || undefined, page, page_size: 100 };
   const { data, isLoading, error } = useSWR(["customers", query], () => api.customers(query), { keepPreviousData: true });
 
   const update = (values) => {

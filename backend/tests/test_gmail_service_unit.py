@@ -364,3 +364,79 @@ def test_send_reply_uses_gmail_source_thread_not_browser_recipient(monkeypatch):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+class _TokenCollection:
+    def __init__(self, token_record):
+        self.token_record = token_record
+
+    async def find_one(self, query, projection):
+        assert query == {"id": gmail_service.TOKEN_DOCUMENT_ID}
+        assert projection == {"_id": 0}
+        return self.token_record
+
+
+class _TokenDb:
+    def __init__(self, token_record):
+        self.gmail_oauth_tokens = _TokenCollection(token_record)
+
+
+def test_connection_token_is_cached_in_memory_until_provider_expiry(monkeypatch):
+    configure_oauth(monkeypatch)
+    encrypted = _fernet().encrypt(b"refresh-token-value").decode("utf-8")
+    database = _TokenDb({"id": gmail_service.TOKEN_DOCUMENT_ID, "refresh_token_encrypted": encrypted})
+    requests_made = []
+
+    class FakeResponse:
+        ok = True
+
+        def json(self):
+            return {"access_token": "short-lived-token", "expires_in": 3600}
+
+    def fake_post(*args, **kwargs):
+        requests_made.append((args, kwargs))
+        return FakeResponse()
+
+    gmail_service._ACCESS_TOKEN_CACHE.clear()
+    monkeypatch.setattr(gmail_service.requests, "post", fake_post)
+
+    first_token, _ = asyncio.run(gmail_service.get_connection_token(database))
+    second_token, _ = asyncio.run(gmail_service.get_connection_token(database))
+
+    assert first_token == second_token == "short-lived-token"
+    assert len(requests_made) == 1
+
+
+def test_thread_list_returns_compact_summaries_without_mailbox_persistence(monkeypatch):
+    raw_threads = {
+        "thread-a": {"id": "thread-a", "messages": [raw_message(message_id="message-a", thread_id="thread-a")]},
+        "thread-b": {"id": "thread-b", "messages": [raw_message(message_id="message-b", thread_id="thread-b")]},
+    }
+    calls = []
+
+    async def fake_token(db):
+        return "access-token", {"email_address": "info.erydez@gmail.com"}
+
+    async def fake_request(method, url, **kwargs):
+        calls.append((method, url, kwargs.get("params")))
+        if url.endswith("/threads"):
+            return {"threads": [{"id": "thread-a"}, {"id": "thread-b"}], "nextPageToken": "next-page"}
+        return raw_threads[url.rsplit("/", 1)[-1]]
+
+    class SyncState:
+        async def update_one(self, *args, **kwargs):
+            return None
+
+    class Db:
+        gmail_sync_state = SyncState()
+
+    monkeypatch.setattr(gmail_service, "get_connection_token", fake_token)
+    monkeypatch.setattr(gmail_service, "_request_google_async", fake_request)
+
+    result = asyncio.run(gmail_service.list_threads(Db(), max_results=2))
+
+    assert result["total"] == 2
+    assert result["nextPageToken"] == "next-page"
+    assert all(thread["messages"] == [] for thread in result["threads"])
+    assert len(calls) == 3
+    assert all("payload" not in str(thread) for thread in result["threads"])

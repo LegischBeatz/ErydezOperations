@@ -109,7 +109,7 @@ The repository does not ship a backup scheduler, retention policy, or restore sc
 
 ## Local Development and Validation
 
-The packaged Compose deployment is the operational path. Separate development processes are supported by the code but require explicit local configuration.
+The packaged Compose deployment is the operational path. Nginx compresses text responses and caches only content-hashed `static/` build assets for one year; `index.html` is revalidated and `/api` responses are not browser-cached by this rule. Do not add a blanket API cache because active-snapshot, Gmail, and integration responses have different freshness and privacy boundaries. Separate development processes are supported by the code but require explicit local configuration.
 
 ```bash
 # Backend: MONGO_URL and DB_NAME are required before importing server.py.
@@ -131,6 +131,8 @@ npm run build
 ```
 
 `backend/pytest.ini` fixes pytest-xdist at `-n 2 --dist loadscope`; retain it. The backend suite includes service-independent unit tests and HTTP tests that expect a controlled API at `REACT_APP_BACKEND_URL` or `http://localhost:8001` with an active snapshot. Do not point those HTTP tests at an environment with data that must be retained. Use `pytest -n 0` only for serial isolation troubleshooting.
+
+For a safe initial latency diagnosis, inspect the browser `Server-Timing` response hint and only redacted `performance_request`/`performance_database` log categories. These include route template, method, status, duration, response-byte hint, and aggregate database timing; they intentionally exclude request queries, customer fields, Gmail content, credentials, tokens, and provider payloads.
 
 No repository-defined frontend lint script or TypeScript type-check command exists. The current frontend is JavaScript/JSX; `npm run build` is the available compile/build validation.
 

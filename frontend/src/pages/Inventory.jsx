@@ -2,6 +2,7 @@ import React from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import useSWR from "swr";
 import { api } from "@/lib/api";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { fmtDateTime } from "@/lib/format";
 import { customerName, money } from "@/lib/shopify";
 import { EmptyState, FactList, interactiveRowProps, PageHeader, StatusChip, TableOverflowHint } from "@/components/common";
@@ -19,7 +20,8 @@ export default function Inventory() {
   const q = params.get("q") || "";
   const lowStock = params.get("low_stock") === "true";
   const page = Math.max(Number(params.get("page") || 1), 1);
-  const query = { q: q || undefined, low_stock: lowStock || undefined, page, page_size: 100 };
+  const debouncedQuery = useDebouncedValue(q.trim());
+  const query = { q: debouncedQuery || undefined, low_stock: lowStock || undefined, page, page_size: 100 };
   const { data, isLoading, error } = useSWR(["inventory", query], () => api.inventory(query), { keepPreviousData: true });
   const { data: detail } = useSWR(selected ? ["inventory-item", selected] : null, () => api.inventoryItem(selected));
 

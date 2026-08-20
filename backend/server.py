@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 import uuid
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ASCENDING, DESCENDING, IndexModel
 from pymongo.errors import PyMongoError
 from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
 
 from shopify import (
     ShopifyAPIError,
@@ -71,6 +73,103 @@ INTEGRATION_HEALTH = "integration_health_snapshots"
 INTEGRATION_AUDIT = "integration_audit_events"
 LOCAL_OPERATOR_LABEL = os.environ.get("ERYDEZ_LOCAL_OPERATOR_LABEL", "Local operator").strip() or "Local operator"
 _sync_lock = asyncio.Lock()
+
+
+def _performance_route_label(path: str) -> str:
+    """Return a bounded route label without identifiers or query content."""
+    if path.startswith("/api/gmail/threads/"):
+        return "/api/gmail/threads/{thread_id}" + ("/ai-reply" if path.endswith("/ai-reply") else "")
+    for prefix, label in (
+        ("/api/orders/", "/api/orders/{order_id}"),
+        ("/api/products/", "/api/products/{product_id}"),
+        ("/api/inventory/", "/api/inventory/{item_id}"),
+        ("/api/customers/", "/api/customers/{customer_id}"),
+        ("/api/returns/", "/api/returns/{return_id}"),
+    ):
+        if path.startswith(prefix):
+            return label
+    return path
+
+
+@app.middleware("http")
+async def observe_api_request_timing(request: Request, call_next):
+    """Emit safe route timing and expose an app-duration hint without request data."""
+    started = time.perf_counter()
+    route = _performance_route_label(request.url.path)
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = (time.perf_counter() - started) * 1000
+        if request.url.path.startswith("/api/"):
+            logger.info(
+                "performance_request method=%s route=%s status=500 duration_ms=%.2f response_bytes=unknown",
+                request.method,
+                route,
+                duration_ms,
+            )
+        raise
+
+    duration_ms = (time.perf_counter() - started) * 1000
+    if request.url.path.startswith("/api/"):
+        response.headers["Server-Timing"] = f"app;dur={duration_ms:.1f}"
+        logger.info(
+            "performance_request method=%s route=%s status=%s duration_ms=%.2f response_bytes=%s",
+            request.method,
+            route,
+            response.status_code,
+            duration_ms,
+            response.headers.get("content-length", "unknown"),
+        )
+    return response
+
+
+def mongo_contains(value: str | None, fields: tuple[str, ...]) -> dict[str, Any] | None:
+    """Build a bounded, case-insensitive substring filter for normalized snapshot fields."""
+    needle = (value or "").strip()
+    if not needle:
+        return None
+    return {"$or": [{field: {"$regex": re.escape(needle), "$options": "i"}} for field in fields]}
+
+
+def combine_mongo_filters(*filters: dict[str, Any] | None) -> dict[str, Any]:
+    """Combine optional MongoDB predicates without duplicating root operators."""
+    active_filters = [item for item in filters if item]
+    if not active_filters:
+        return {}
+    if len(active_filters) == 1:
+        return active_filters[0]
+    return {"$and": active_filters}
+
+
+async def paginated_snapshot_records(
+    collection_name: str,
+    query: dict[str, Any],
+    *,
+    sort: tuple[str, int],
+    page: int,
+    page_size: int,
+) -> dict[str, Any]:
+    """Read only one page plus count from the active snapshot and log safe aggregate timing."""
+    started = time.perf_counter()
+    collection = db[collection_name]
+    total_task = collection.count_documents(query)
+    items_task = collection.find(query, NO_ID).sort(*sort).skip((page - 1) * page_size).limit(page_size).to_list(length=page_size)
+    total, items = await asyncio.gather(total_task, items_task)
+    duration_ms = (time.perf_counter() - started) * 1000
+    logger.info(
+        "performance_database collection=%s operation=page matched=%s returned=%s duration_ms=%.2f",
+        collection_name,
+        total,
+        len(items),
+        duration_ms,
+    )
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": max((total + page_size - 1) // page_size, 1),
+    }
 
 
 def parse_datetime(value: str | None) -> datetime | None:
@@ -697,54 +796,83 @@ async def list_orders(
     page_size: int = Query(default=100, ge=1, le=250),
 ) -> dict[str, Any]:
     sync_id = await active_sync_id()
-    orders = await db.orders.find({"sync_id": sync_id}, NO_ID).sort("processed_at", DESCENDING).to_list(None)
-    if q:
-        needle = q.casefold()
-
-        def matches(order: dict[str, Any]) -> bool:
-            fields = [
-                order.get("order_number"),
-                order.get("confirmation_number"),
-                order.get("email"),
-                order.get("phone"),
-                ((order.get("customer") or {}).get("display_name")),
-                ((order.get("shipping_address") or {}).get("city")),
+    filters: list[dict[str, Any] | None] = [
+        {"sync_id": sync_id},
+        mongo_contains(
+            q,
+            (
+                "order_number",
+                "confirmation_number",
+                "email",
+                "phone",
+                "customer.display_name",
+                "shipping_address.city",
+                "line_items.sku",
+                "line_items.name",
+                "line_items.product_title",
+                "tracking.number",
+            ),
+        ),
+        {"financial_status": financial_status.upper()} if financial_status else None,
+        {"fulfillment_status": fulfillment_status.upper()} if fulfillment_status else None,
+        {"delivery_method": delivery_method.upper()} if delivery_method else None,
+    ]
+    direct_legacy_filters: dict[str, dict[str, Any]] = {
+        "unfulfilled": {"fulfillment_status": {"$ne": "FULFILLED"}, "cancelled_at": None},
+        "shipping": {"delivery_method": "SHIPPING"},
+        "pickup": {"delivery_method": "PICKUP_OR_OTHER"},
+        "cancelled-refunded": {
+            "$or": [
+                {"cancelled_at": {"$ne": None}},
+                {"financial_status": {"$in": ["REFUNDED", "PARTIALLY_REFUNDED"]}},
             ]
-            fields.extend(
-                value
-                for item in order.get("line_items") or []
-                for value in (item.get("sku"), item.get("name"), item.get("product_title"))
-            )
-            fields.extend(entry.get("number") for entry in order.get("tracking") or [])
-            return any(needle in str(value or "").casefold() for value in fields)
+        },
+    }
+    age_filters = {
+        "over-8": 8,
+        "over-14": 14,
+        "over-30": 30,
+    }
+    if filter in direct_legacy_filters:
+        filters.append(direct_legacy_filters[filter])
+    query = combine_mongo_filters(*filters)
 
-        orders = [order for order in orders if matches(order)]
-    if financial_status:
-        orders = [order for order in orders if order.get("financial_status") == financial_status.upper()]
-    if fulfillment_status:
-        orders = [order for order in orders if order.get("fulfillment_status") == fulfillment_status.upper()]
-    if delivery_method:
-        orders = [order for order in orders if order.get("delivery_method") == delivery_method.upper()]
-    legacy_filters = {
-        "unfulfilled": lambda order: order.get("fulfillment_status") != "FULFILLED" and not order.get("cancelled_at"),
-        "over-8": lambda order: business_day_age(order.get("processed_at")) > 8 and order.get("fulfillment_status") != "FULFILLED",
-        "over-14": lambda order: business_day_age(order.get("processed_at")) > 14 and order.get("fulfillment_status") != "FULFILLED",
-        "over-30": lambda order: business_day_age(order.get("processed_at")) > 30 and order.get("fulfillment_status") != "FULFILLED",
-        "shipping": lambda order: order.get("delivery_method") == "SHIPPING",
-        "pickup": lambda order: order.get("delivery_method") == "PICKUP_OR_OTHER",
-        "cancelled-refunded": lambda order: bool(order.get("cancelled_at")) or order.get("financial_status") in {"REFUNDED", "PARTIALLY_REFUNDED"},
-    }
-    if filter in legacy_filters:
-        orders = [order for order in orders if legacy_filters[filter](order)]
-    total = len(orders)
-    start = (page - 1) * page_size
-    return {
-        "items": [order_with_derived(order) for order in orders[start:start + page_size]],
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "pages": max((total + page_size - 1) // page_size, 1),
-    }
+    if filter in age_filters:
+        # Business-day age is deliberately retained as an exact Python rule. All
+        # inexpensive user filters still run in MongoDB before this compatibility path.
+        started = time.perf_counter()
+        candidates = await db.orders.find(query, NO_ID).sort("processed_at", DESCENDING).to_list(None)
+        orders = [
+            order for order in candidates
+            if business_day_age(order.get("processed_at")) > age_filters[filter]
+            and order.get("fulfillment_status") != "FULFILLED"
+        ]
+        logger.info(
+            "performance_database collection=orders operation=business_day_filter candidates=%s returned=%s duration_ms=%.2f",
+            len(candidates),
+            len(orders),
+            (time.perf_counter() - started) * 1000,
+        )
+        total = len(orders)
+        start = (page - 1) * page_size
+        items = orders[start:start + page_size]
+        return {
+            "items": [order_with_derived(order) for order in items],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": max((total + page_size - 1) // page_size, 1),
+        }
+
+    result = await paginated_snapshot_records(
+        "orders",
+        query,
+        sort=("processed_at", DESCENDING),
+        page=page,
+        page_size=page_size,
+    )
+    result["items"] = [order_with_derived(order) for order in result["items"]]
+    return result
 
 
 async def find_active(collection: str, record_id: str) -> dict[str, Any]:
@@ -808,15 +936,18 @@ async def order_write_removed(order_id: str, payload: dict[str, Any] = Body(defa
 @api.get("/products")
 async def list_products(q: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
     sync_id = await active_sync_id()
-    products = await db.products.find({"sync_id": sync_id}, NO_ID).sort("title", ASCENDING).to_list(None)
-    if q:
-        needle = q.casefold()
-        products = [
-            product for product in products
-            if any(needle in str(value or "").casefold() for value in (product.get("title"), product.get("vendor"), product.get("product_type"), product.get("handle")))
-        ]
-    if status:
-        products = [product for product in products if product.get("status") == status.upper()]
+    query = combine_mongo_filters(
+        {"sync_id": sync_id},
+        mongo_contains(q, ("title", "vendor", "product_type", "handle")),
+        {"status": status.upper()} if status else None,
+    )
+    started = time.perf_counter()
+    products = await db.products.find(query, NO_ID).sort("title", ASCENDING).to_list(None)
+    logger.info(
+        "performance_database collection=products operation=list returned=%s duration_ms=%.2f",
+        len(products),
+        (time.perf_counter() - started) * 1000,
+    )
     return products
 
 
@@ -837,18 +968,18 @@ async def list_inventory(
     page_size: int = Query(default=100, ge=1, le=250),
 ) -> dict[str, Any]:
     sync_id = await active_sync_id()
-    items = await db.inventory_items.find({"sync_id": sync_id}, NO_ID).sort("product_title", ASCENDING).to_list(None)
-    if q:
-        needle = q.casefold()
-        items = [
-            item for item in items
-            if any(needle in str(value or "").casefold() for value in (item.get("sku"), item.get("product_title"), item.get("variant_title")))
-        ]
-    if low_stock:
-        items = [item for item in items if item.get("tracked") and int((item.get("quantities") or {}).get("available") or 0) <= 3]
-    total = len(items)
-    start = (page - 1) * page_size
-    return {"items": items[start:start + page_size], "total": total, "page": page, "page_size": page_size, "pages": max((total + page_size - 1) // page_size, 1)}
+    query = combine_mongo_filters(
+        {"sync_id": sync_id},
+        mongo_contains(q, ("sku", "product_title", "variant_title")),
+        {"tracked": True, "quantities.available": {"$lte": 3}} if low_stock else None,
+    )
+    return await paginated_snapshot_records(
+        "inventory_items",
+        query,
+        sort=("product_title", ASCENDING),
+        page=page,
+        page_size=page_size,
+    )
 
 
 @api.get("/inventory/{item_id}")
@@ -881,16 +1012,17 @@ async def list_customers(
     page_size: int = Query(default=100, ge=1, le=250),
 ) -> dict[str, Any]:
     sync_id = await active_sync_id()
-    customers = await db.customers.find({"sync_id": sync_id}, NO_ID).sort("updated_at", DESCENDING).to_list(None)
-    if q:
-        needle = q.casefold()
-        customers = [
-            customer for customer in customers
-            if any(needle in str(value or "").casefold() for value in (customer.get("display_name"), customer.get("email"), customer.get("phone"), ((customer.get("default_address") or {}).get("city"))))
-        ]
-    total = len(customers)
-    start = (page - 1) * page_size
-    return {"items": customers[start:start + page_size], "total": total, "page": page, "page_size": page_size, "pages": max((total + page_size - 1) // page_size, 1)}
+    query = combine_mongo_filters(
+        {"sync_id": sync_id},
+        mongo_contains(q, ("display_name", "email", "phone", "default_address.city")),
+    )
+    return await paginated_snapshot_records(
+        "customers",
+        query,
+        sort=("updated_at", DESCENDING),
+        page=page,
+        page_size=page_size,
+    )
 
 
 @api.get("/customers/{customer_id}")
@@ -1112,11 +1244,18 @@ async def global_search(q: str) -> dict[str, list[dict[str, Any]]]:
     needle = q.casefold().strip()
     if not needle:
         return {"orders": [], "products": [], "customers": [], "inventory": []}
-    orders = (await list_orders(q=q, page=1, page_size=8))["items"]
-    products = (await list_products(q=q))[:8]
-    customers = (await list_customers(q=q, page=1, page_size=8))["items"]
-    inventory = (await list_inventory(q=q, page=1, page_size=8))["items"]
-    return {"orders": orders, "products": products, "customers": customers, "inventory": inventory}
+    orders_result, products, customers_result, inventory_result = await asyncio.gather(
+        list_orders(q=q, page=1, page_size=8),
+        list_products(q=q),
+        list_customers(q=q, page=1, page_size=8),
+        list_inventory(q=q, page=1, page_size=8),
+    )
+    return {
+        "orders": orders_result["items"],
+        "products": products[:8],
+        "customers": customers_result["items"],
+        "inventory": inventory_result["items"],
+    }
 
 
 @api.get("/work-items")

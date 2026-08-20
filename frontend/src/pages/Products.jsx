@@ -2,6 +2,7 @@ import React from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import useSWR from "swr";
 import { api } from "@/lib/api";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { money, statusLabel } from "@/lib/shopify";
 import { EmptyState, interactiveRowProps, PageHeader, StatusChip, TableOverflowHint } from "@/components/common";
 import { Input } from "@/components/ui/input";
@@ -13,7 +14,8 @@ export default function Products() {
   const [params, setParams] = useSearchParams();
   const q = params.get("q") || "";
   const status = params.get("status") || "";
-  const query = { q: q || undefined, status: status || undefined };
+  const debouncedQuery = useDebouncedValue(q.trim());
+  const query = { q: debouncedQuery || undefined, status: status || undefined };
   const { data: products, isLoading, error } = useSWR(["products", query], () => api.products(query));
 
   const update = (key, value) => {

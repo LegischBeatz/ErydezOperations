@@ -15,6 +15,7 @@ Security model:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import html
@@ -22,6 +23,7 @@ import logging
 import os
 import re
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import parseaddr, parsedate_to_datetime
@@ -47,6 +49,10 @@ GMAIL_SCOPES = (
 TOKEN_DOCUMENT_ID = "gmail-primary"
 OAUTH_STATE_TTL_MINUTES = 10
 REQUEST_TIMEOUT_SECONDS = 20
+ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 60
+THREAD_METADATA_CONCURRENCY = 5
+_ACCESS_TOKEN_CACHE: dict[str, dict[str, Any]] = {}
+_ACCESS_TOKEN_CACHE_LOCK = asyncio.Lock()
 
 
 class GmailServiceError(Exception):
@@ -192,6 +198,27 @@ def _request_google(
         raise GmailAPIError("Google Gmail API lieferte keine gültige Antwort") from exc
 
 
+async def _request_google_async(
+    method: str,
+    url: str,
+    *,
+    access_token: str | None = None,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+    data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run blocking provider transport outside FastAPI's event loop."""
+    return await asyncio.to_thread(
+        _request_google,
+        method,
+        url,
+        access_token=access_token,
+        params=params,
+        json_body=json_body,
+        data=data,
+    )
+
+
 def build_authorization_url(state: str) -> str:
     """Build a Google OAuth authorization URL for the configured web client."""
     config = _require_oauth_configuration()
@@ -269,7 +296,7 @@ def _exchange_authorization_code(code: str) -> dict[str, Any]:
 async def complete_oauth_authorization(db: Any, code: str, state: str) -> dict[str, Any]:
     """Validate callback state, exchange code, and persist encrypted refresh token."""
     await _consume_oauth_state(db, state)
-    token_response = _exchange_authorization_code(code)
+    token_response = await asyncio.to_thread(_exchange_authorization_code, code)
     access_token = str(token_response.get("access_token") or "")
     refresh_token = str(token_response.get("refresh_token") or "")
     if not access_token:
@@ -284,7 +311,7 @@ async def complete_oauth_authorization(db: Any, code: str, state: str) -> dict[s
     if not refresh_token:
         raise GmailAuthenticationError("Google lieferte keinen Refresh-Token; bitte den Zugriff erneut bestätigen")
 
-    profile = _request_google("GET", f"{GMAIL_API_BASE}/profile", access_token=access_token)
+    profile = await _request_google_async("GET", f"{GMAIL_API_BASE}/profile", access_token=access_token)
     email_address = str(profile.get("emailAddress") or "").strip().lower()
     if not email_address:
         raise GmailAuthenticationError("Das autorisierte Gmail-Konto konnte nicht ermittelt werden")
@@ -307,44 +334,66 @@ async def complete_oauth_authorization(db: Any, code: str, state: str) -> dict[s
 
 
 async def get_connection_token(db: Any) -> tuple[str, dict[str, Any]]:
-    """Refresh and return a short-lived access token plus safe connection metadata."""
+    """Return a short-lived in-memory access token plus safe connection metadata.
+
+    The encrypted refresh token remains the only persisted credential. Cache keys
+    derive from its ciphertext and cache entries expire before the provider token.
+    """
     _require_oauth_configuration()
     token_record = await db.gmail_oauth_tokens.find_one({"id": TOKEN_DOCUMENT_ID}, {"_id": 0})
     if not token_record:
         raise GmailAuthenticationError("Es ist kein Gmail-Konto verbunden")
-    try:
-        refresh_token = _fernet().decrypt(token_record["refresh_token_encrypted"].encode("utf-8")).decode("utf-8")
-    except (KeyError, InvalidToken, UnicodeDecodeError) as exc:
-        logger.warning("Stored Gmail token could not be decrypted")
-        raise GmailAuthenticationError("Die gespeicherte Gmail-Autorisierung ist ungültig") from exc
+    cache_key = hashlib.sha256(str(token_record.get("refresh_token_encrypted") or "").encode("utf-8")).hexdigest()
+    now = time.monotonic()
+    cached = _ACCESS_TOKEN_CACHE.get(cache_key)
+    if cached and float(cached.get("expires_at") or 0) > now:
+        return str(cached["access_token"]), token_record
 
-    config = _require_oauth_configuration()
-    try:
-        response = requests.post(
-            GOOGLE_TOKEN_ENDPOINT,
-            data={
-                "client_id": config["client_id"],
-                "client_secret": config["client_secret"],
-                "refresh_token": refresh_token,
-                "grant_type": "refresh_token",
-            },
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-    except requests.RequestException as exc:
-        logger.warning("OAuth refresh failed: %s", exc.__class__.__name__)
-        raise GmailAPIError("Google OAuth ist derzeit nicht erreichbar") from exc
+    async with _ACCESS_TOKEN_CACHE_LOCK:
+        now = time.monotonic()
+        cached = _ACCESS_TOKEN_CACHE.get(cache_key)
+        if cached and float(cached.get("expires_at") or 0) > now:
+            return str(cached["access_token"]), token_record
+        try:
+            refresh_token = _fernet().decrypt(token_record["refresh_token_encrypted"].encode("utf-8")).decode("utf-8")
+        except (KeyError, InvalidToken, UnicodeDecodeError) as exc:
+            logger.warning("Stored Gmail token could not be decrypted")
+            raise GmailAuthenticationError("Die gespeicherte Gmail-Autorisierung ist ungültig") from exc
 
-    if not response.ok:
-        logger.warning("OAuth refresh rejected: %s", _safe_google_error(response))
-        raise GmailAuthenticationError("Die Gmail-Autorisierung ist abgelaufen oder wurde widerrufen")
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise GmailAuthenticationError("Google OAuth lieferte keine gültige Antwort") from exc
-    access_token = str(payload.get("access_token") or "")
-    if not access_token:
-        raise GmailAuthenticationError("Google OAuth lieferte keinen Zugriffstoken")
-    return access_token, token_record
+        config = _require_oauth_configuration()
+        try:
+            response = await asyncio.to_thread(
+                requests.post,
+                GOOGLE_TOKEN_ENDPOINT,
+                data={
+                    "client_id": config["client_id"],
+                    "client_secret": config["client_secret"],
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                },
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as exc:
+            logger.warning("OAuth refresh failed: %s", exc.__class__.__name__)
+            raise GmailAPIError("Google OAuth ist derzeit nicht erreichbar") from exc
+
+        if not response.ok:
+            logger.warning("OAuth refresh rejected: %s", _safe_google_error(response))
+            raise GmailAuthenticationError("Die Gmail-Autorisierung ist abgelaufen oder wurde widerrufen")
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise GmailAuthenticationError("Google OAuth lieferte keine gültige Antwort") from exc
+        access_token = str(payload.get("access_token") or "")
+        if not access_token:
+            raise GmailAuthenticationError("Google OAuth lieferte keinen Zugriffstoken")
+        expires_in = max(int(payload.get("expires_in") or 3600), ACCESS_TOKEN_REFRESH_SKEW_SECONDS + 1)
+        _ACCESS_TOKEN_CACHE.clear()
+        _ACCESS_TOKEN_CACHE[cache_key] = {
+            "access_token": access_token,
+            "expires_at": time.monotonic() + expires_in - ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+        }
+        return access_token, token_record
 
 
 def _header_map(message: dict[str, Any]) -> dict[str, str]:
@@ -578,25 +627,35 @@ def normalize_thread_for_api(thread: dict[str, Any], own_email: str = "") -> dic
 
 
 async def list_threads(db: Any, query: str | None = None, max_results: int = 25, page_token: str | None = None) -> dict[str, Any]:
-    """Retrieve a page of Gmail conversation threads with compact metadata."""
+    """Retrieve an on-demand page of thread summaries with bounded provider concurrency."""
     access_token, token_record = await get_connection_token(db)
     effective_query = (query or "in:inbox -category:promotions -category:social").strip()
     params: dict[str, Any] = {"maxResults": min(max(max_results, 1), 100), "q": effective_query}
     if page_token:
         params["pageToken"] = page_token
-    listed = _request_google("GET", f"{GMAIL_API_BASE}/threads", access_token=access_token, params=params)
-    threads: list[dict[str, Any]] = []
-    for summary in listed.get("threads") or []:
+    listed = await _request_google_async("GET", f"{GMAIL_API_BASE}/threads", access_token=access_token, params=params)
+    own_email = str(token_record.get("email_address") or "")
+    semaphore = asyncio.Semaphore(THREAD_METADATA_CONCURRENCY)
+
+    async def fetch_summary(summary: dict[str, Any]) -> dict[str, Any] | None:
         thread_id = str(summary.get("id") or "")
         if not thread_id:
-            continue
-        raw_thread = _request_google(
-            "GET",
-            f"{GMAIL_API_BASE}/threads/{thread_id}",
-            access_token=access_token,
-            params={"format": "metadata", "metadataHeaders": ["From", "To", "Subject", "Date"]},
-        )
-        threads.append(normalize_thread_for_api(raw_thread, str(token_record.get("email_address") or "")))
+            return None
+        async with semaphore:
+            raw_thread = await _request_google_async(
+                "GET",
+                f"{GMAIL_API_BASE}/threads/{thread_id}",
+                access_token=access_token,
+                params={"format": "metadata", "metadataHeaders": ["From", "To", "Subject", "Date"]},
+            )
+        normalized = normalize_thread_for_api(raw_thread, own_email)
+        # Thread lists need only compact summary fields. Full messages remain an
+        # explicit on-demand detail request and are never retained locally.
+        normalized["messages"] = []
+        return normalized
+
+    summaries = await asyncio.gather(*(fetch_summary(summary) for summary in listed.get("threads") or []))
+    threads = [summary for summary in summaries if summary]
 
     timestamp = now_iso()
     await db.gmail_sync_state.update_one(
@@ -618,7 +677,7 @@ async def read_thread(db: Any, thread_id: str) -> dict[str, Any]:
     if not thread_id or len(thread_id) > 256:
         raise GmailAPIError("Ungültige Gmail-Thread-ID")
     access_token, token_record = await get_connection_token(db)
-    raw_thread = _request_google(
+    raw_thread = await _request_google_async(
         "GET",
         f"{GMAIL_API_BASE}/threads/{thread_id}",
         access_token=access_token,
@@ -629,7 +688,7 @@ async def read_thread(db: Any, thread_id: str) -> dict[str, Any]:
 
 async def _read_raw_thread(db: Any, thread_id: str) -> tuple[dict[str, Any], str]:
     access_token, token_record = await get_connection_token(db)
-    raw_thread = _request_google(
+    raw_thread = await _request_google_async(
         "GET",
         f"{GMAIL_API_BASE}/threads/{thread_id}",
         access_token=access_token,
@@ -695,7 +754,7 @@ async def send_thread_reply(db: Any, thread_id: str, content: str) -> dict[str, 
     mime.set_content(body)
     raw = base64.urlsafe_b64encode(mime.as_bytes()).decode("ascii")
 
-    result = _request_google(
+    result = await _request_google_async(
         "POST",
         f"{GMAIL_API_BASE}/messages/send",
         access_token=access_token,
@@ -1052,9 +1111,10 @@ async def disconnect_gmail(db: Any) -> None:
     if token_record:
         try:
             refresh_token = _fernet().decrypt(token_record["refresh_token_encrypted"].encode("utf-8")).decode("utf-8")
-            requests.post(GOOGLE_REVOKE_ENDPOINT, params={"token": refresh_token}, timeout=REQUEST_TIMEOUT_SECONDS)
+            await asyncio.to_thread(requests.post, GOOGLE_REVOKE_ENDPOINT, params={"token": refresh_token}, timeout=REQUEST_TIMEOUT_SECONDS)
         except (InvalidToken, KeyError, UnicodeDecodeError, requests.RequestException):
             logger.info("Google token revocation could not be confirmed; local credential will still be deleted")
+    _ACCESS_TOKEN_CACHE.clear()
     await db.gmail_oauth_tokens.delete_one({"id": TOKEN_DOCUMENT_ID})
     await db.gmail_sync_state.delete_one({"id": TOKEN_DOCUMENT_ID})
 

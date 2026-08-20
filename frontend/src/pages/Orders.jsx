@@ -6,6 +6,7 @@ import { fmtDate, fmtRel } from "@/lib/format";
 import { addressLine, customerName, itemSummary, money, primaryTracking, statusLabel } from "@/lib/shopify";
 import { EmptyState, interactiveRowProps, PageHeader, StatusChip, TableOverflowHint } from "@/components/common";
 import { useT } from "@/lib/i18n";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ChevronLeft, ChevronRight, Search, Store } from "lucide-react";
@@ -29,7 +30,8 @@ export default function Orders() {
   const fulfillmentStatus = params.get("fulfillment_status") || "";
   const page = Math.max(Number(params.get("page") || 1), 1);
   const pageSize = 100;
-  const query = { q: q || undefined, filter: filter || undefined, financial_status: financialStatus || undefined, fulfillment_status: fulfillmentStatus || undefined, page, page_size: pageSize };
+  const debouncedQuery = useDebouncedValue(q.trim());
+  const query = { q: debouncedQuery || undefined, filter: filter || undefined, financial_status: financialStatus || undefined, fulfillment_status: fulfillmentStatus || undefined, page, page_size: pageSize };
   const { data, isLoading, error } = useSWR(["orders", query], () => api.orders(query), { keepPreviousData: true });
 
   const update = (values) => {

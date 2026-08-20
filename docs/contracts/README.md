@@ -15,6 +15,7 @@ The Gmail contract is separated into [`gmail.md`](gmail.md) because Gmail has OA
 | Authentication | None at the application layer. Compose publishes only the frontend loopback port by default; do not treat this as an Internet-facing API. |
 | CORS | Disabled unless `CORS_ORIGINS` is non-empty. When configured, it enables credentials and all methods/headers for the listed origins. |
 | API schema | FastAPI provides runtime OpenAPI from implementation annotations, but handlers return direct JSON dictionaries/lists rather than explicit Pydantic response models. |
+| Performance timing | API responses include a `Server-Timing: app;dur=…` duration for browser diagnostics. Backend logs record only method, route template, status, duration, response-byte hint, and aggregate database timings; they never log query text, customer fields, Gmail content, credentials, or provider payloads. |
 | Error body | FastAPI `HTTPException` responses use `{ "detail": "..." }`; request parsing/validation may return FastAPI’s standard `422` detail array. |
 
 ## Data Ownership
@@ -48,23 +49,23 @@ All canonical routes below require an active snapshot. Without one, they return 
 | Method and path | Query or path inputs | Response shape and rules |
 |---|---|---|
 | `GET /api/overview` | None | Shopify-derived dashboard: `source`, `currency`, `last_sync`, `sync`, `cards`, financial/fulfillment counts, recent orders, low stock, and top products. |
-| `GET /api/orders` | `q`, `filter`, `financial_status`, `fulfillment_status`, `delivery_method`, `page` ≥ 1, `page_size` 1–250 | Paginated order response. `filter` recognizes `unfulfilled`, `over-8`, `over-14`, `over-30`, `shipping`, `pickup`, and `cancelled-refunded`; unrecognized values do not add a filter. |
+| `GET /api/orders` | `q`, `filter`, `financial_status`, `fulfillment_status`, `delivery_method`, `page` ≥ 1, `page_size` 1–250 | Paginated order response. Search and directly expressible status/delivery filters execute against the active MongoDB snapshot before page data is transferred. `filter` recognizes `unfulfilled`, `over-8`, `over-14`, `over-30`, `shipping`, `pickup`, and `cancelled-refunded`; age thresholds preserve their existing exact business-day rule after inexpensive snapshot filters. Unrecognized values do not add a filter. |
 | `GET /api/orders/{order_id}` | Normalized ID, Shopify GID, or order number | Active order with derived `business_day_age`, `customer_name`, and `city`; `404` when absent. |
 | `POST /api/orders/{order_id}/notes` | Any body | Legacy write route; always `409`. |
 | `POST /api/orders/{order_id}/pause-updates` | Any body | Legacy write route; always `409`. |
 | `POST /api/orders/{order_id}/timeline` | Any body | Legacy write route; always `409`. |
-| `GET /api/products` | `q`, `status` | Active product list, sorted by title. |
+| `GET /api/products` | `q`, `status` | Active product list, sorted by title. Text/status predicates execute against the active MongoDB snapshot before records are returned. |
 | `GET /api/products/{product_id}` | Normalized ID or Shopify GID | Product plus linked active `variants` and `inventory`; `404` when absent. |
-| `GET /api/inventory` | `q`, `low_stock` boolean, `page` ≥ 1, `page_size` 1–250 | Paginated inventory items. Low stock means tracked with `quantities.available <= 3`. |
+| `GET /api/inventory` | `q`, `low_stock` boolean, `page` ≥ 1, `page_size` 1–250 | Paginated inventory items. Text/low-stock predicates execute against the active MongoDB snapshot before page data is transferred. Low stock means tracked with `quantities.available <= 3`. |
 | `GET /api/inventory/{item_id}` | Normalized ID, Shopify GID, or SKU | Inventory item plus linked `variant`, `product`, and unfulfilled `open_orders`; `404` when absent. |
-| `GET /api/customers` | `q`, `page` ≥ 1, `page_size` 1–250 | Paginated active customers. |
+| `GET /api/customers` | `q`, `page` ≥ 1, `page_size` 1–250 | Paginated active customers. Text predicates execute against the active MongoDB snapshot before page data is transferred. |
 | `GET /api/customers/{customer_id}` | Normalized ID or Shopify GID | Customer plus linked active orders; `404` when absent. |
 | `GET /api/fulfillment` and `GET /api/fulfillments` | None | Same newest-first active fulfillment list. |
 | `GET /api/refunds` | None | Newest-first active refund list. |
 | `GET /api/returns` | None | Newest-first active return list. |
 | `GET /api/returns/{return_id}` | Normalized ID or Shopify GID | One active return; `404` when absent. |
 | `GET /api/reports` | None | Read-only report derived from `overview`, including current `refreshed_at`. |
-| `GET /api/search` | Required `q` string | Up to eight matching orders, products, customers, and inventory items per family. Empty/whitespace query returns empty arrays. |
+| `GET /api/search` | Required `q` string | Up to eight matching orders, products, customers, and inventory items per family. The independent active-snapshot family queries run concurrently. Empty/whitespace query returns empty arrays. |
 
 ### Pagination Shape
 
@@ -129,7 +130,7 @@ Public integration records include ID, provider, environment, display identity, 
 | `GET /api/gmail/oauth/start` | Starts a CSRF-protected OAuth flow and redirects to Google. |
 | `GET /api/gmail/oauth/callback` | Consumes the authorization response and redirects to `/gmail` with an outcome code. |
 | `POST /api/gmail/disconnect` | Revokes Google access where possible and deletes local authorization data. |
-| `GET /api/gmail/threads` | On-demand list of normalized threads, Gmail-search query support, 1–100 results, optional page token. |
+| `GET /api/gmail/threads` | On-demand list of compact normalized thread summaries, Gmail-search query support, 1–100 results, optional page token. A short-lived in-memory access token and bounded metadata-request concurrency reduce provider round trips without creating a mailbox mirror. |
 | `GET /api/gmail/threads/{thread_id}` | Full normalized on-demand thread. |
 | `POST /api/gmail/threads/{thread_id}/ai-reply` | Returns an editable draft only. |
 | `POST /api/gmail/send` | Sends an explicitly requested existing-thread reply using server-derived addressing/threading metadata. |

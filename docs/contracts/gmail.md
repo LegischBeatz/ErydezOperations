@@ -29,7 +29,7 @@ The status endpoint intentionally exposes missing configuration names and the co
 | `GET /api/gmail/oauth/start` | None | Creates one-time state and returns a `302` redirect to Google OAuth consent. | `503` when OAuth/encryption configuration is incomplete. |
 | `GET /api/gmail/oauth/callback` | `code`, `state`, optional `error` query values | Validates state, exchanges code, stores encrypted refresh token, records local connection, then redirects `303` to `/gmail?oauth=connected`. Provider/user error redirects to `cancelled` or `failed`. | Callback failure is intentionally represented by browser redirect rather than a credential-bearing response. |
 | `POST /api/gmail/disconnect` | Empty body accepted | Attempts Google token revocation, deletes local token and refresh metadata, marks the local connection disconnected, and returns `{ "ok": true }`. | Provider/configuration errors map to safe Gmail errors; local token deletion still occurs if revocation cannot be confirmed. |
-| `GET /api/gmail/threads` | Optional `q`, `page_token`; `max_results` integer 1–100, default 25 | Retrieves a page of normalized thread summaries, defaults `q` to `in:inbox -category:promotions -category:social`, records safe refresh metadata. | `401` if not authorized; `409` if lifecycle blocked; `502` for provider/network failures. |
+| `GET /api/gmail/threads` | Optional `q`, `page_token`; `max_results` integer 1–100, default 25 | Retrieves a page of compact normalized thread summaries, defaults `q` to `in:inbox -category:promotions -category:social`, records safe refresh metadata. The encrypted refresh token remains persistent; the resulting access token is held only in the backend process until shortly before its provider expiry. Summary metadata reads use bounded provider concurrency and do not create a mailbox mirror. | `401` if not authorized; `409` if lifecycle blocked; `502` for provider/network failures. |
 | `GET /api/gmail/threads/{thread_id}` | Thread ID up to 256 characters | Retrieves one complete normalized thread with chronological messages. | `502` for invalid ID/provider failure; `401`/`409` as above. |
 | `POST /api/gmail/threads/{thread_id}/ai-reply` | Optional JSON `sender_name`, `language`, `instructions`, `profile_id` | Reads the thread and returns an editable draft plus a non-persistent context plan. `sender_name` is limited to 100 characters; `language` to 50; `instructions` to 500; `profile_id` to 80. Unknown language/profile hints are ignored in favour of server-side detection. No Gmail send or MongoDB draft write occurs. | `422` for empty thread; `503` for missing AI config; `402` for detected AI quota exhaustion; `502` for other generation/provider failure. |
 | `POST /api/gmail/send` | JSON `{ "thread_id": string, "content": string }` | Reloads the source thread, derives reply metadata, sends through Gmail, records safe audit evidence, and returns safe message result. | `422` for absent thread ID; `502` for empty/over-50,000-character content, invalid recipient, or provider failure; `401`/`409` as above. |
@@ -66,7 +66,7 @@ The status endpoint intentionally exposes missing configuration names and the co
 
 ## Thread and Message Schema
 
-`GET /api/gmail/threads` returns the following envelope. `nextPageToken` is Gmail’s opaque pagination token and must be sent back unchanged as `page_token` to retrieve a following page.
+`GET /api/gmail/threads` returns the following envelope. `nextPageToken` is Gmail’s opaque pagination token and must be sent back unchanged as `page_token` to retrieve a following page. List summaries intentionally expose `messages: []`; complete message bodies, sanitized HTML, and attachment metadata are returned only by the explicit thread-detail route.
 
 ```json
 {
@@ -194,7 +194,7 @@ The current React UI adds a two-step confirmation (`Senden vorbereiten` followed
 | Gmail / Google OAuth provider failure | `502` | Inspect bounded backend logs and safe error detail; do not manually edit encrypted token data. |
 | OpenAI quota unavailable | `402` | Use manual reply or restore optional AI-provider capacity; Gmail send remains independently available. |
 
-There is no mailbox synchronization, webhook, push watch, message archive, draft persistence, attachment download, or provider event ledger contract. Additions in these areas require new implementation, security review, operational runbook, tests, and a durable decision record.
+There is no mailbox synchronization, webhook, push watch, message archive, draft persistence, attachment download, or provider event ledger contract. The short-lived process-memory access-token cache and on-demand list summaries are not a Gmail data mirror and are discarded on backend restart or token expiry. Additions in these areas require new implementation, security review, operational runbook, tests, and a durable decision record.
 
 ## Implementation Sources
 

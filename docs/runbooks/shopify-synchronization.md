@@ -93,7 +93,7 @@ Invoke-RestMethod http://127.0.0.1:8082/api/refunds
 Invoke-RestMethod http://127.0.0.1:8082/api/returns
 ```
 
-Open the major React views after API validation. Confirm that visible records identify Shopify as source and that detail/search navigation uses the newly active snapshot. Do not attempt order notes, pause updates, or reset as validation; those are intentionally disabled routes.
+Open the major React views after API validation. Confirm that visible records identify Shopify as source and that detail/search navigation uses the newly active snapshot. For a bounded latency diagnosis, inspect only the browser `Server-Timing` response hint and redacted `performance_request`/`performance_database` backend logs; they exclude search terms, customer fields, provider payloads, and credentials. Do not attempt order notes, pause updates, or reset as validation; those are intentionally disabled routes.
 
 ### 5. Preserve diagnostics
 

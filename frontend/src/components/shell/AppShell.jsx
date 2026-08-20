@@ -6,6 +6,7 @@ import { fmtRel } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { StatusChip } from "@/components/common";
 import { useT } from "@/lib/i18n";
+import { useDebouncedValue } from "@/lib/useDebouncedValue";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -48,7 +49,11 @@ function GlobalSearch({ open, setOpen }) {
   const { t } = useT();
   const [q, setQ] = useState("");
   const navigate = useNavigate();
-  const { data, isLoading } = useSWR(q.trim().length >= 2 ? ["search", q.trim()] : null, () => api.search(q.trim()));
+  const debouncedQuery = useDebouncedValue(q.trim());
+  const { data, isLoading } = useSWR(
+    debouncedQuery.length >= 2 ? ["search", debouncedQuery] : null,
+    () => api.search(debouncedQuery)
+  );
   const go = (path) => {
     setOpen(false);
     setQ("");
@@ -73,6 +78,7 @@ function GlobalSearch({ open, setOpen }) {
         </div>
         <div className="max-h-[34rem] overflow-y-auto p-2">
           {q.trim().length < 2 && <p className="p-3 text-xs text-inkmed">{t("Type at least 2 characters to search the active Shopify snapshot.")}</p>}
+          {q.trim().length >= 2 && q.trim() !== debouncedQuery && <p className="p-3 text-xs text-inkmed">{t("Preparing search…")}</p>}
           {isLoading && <p className="p-3 text-xs text-inkmed">{t("Searching Shopify data…")}</p>}
           {data && total === 0 && <p className="p-3 text-xs text-inkmed">{t("No matching Shopify records.")}</p>}
 

@@ -63,7 +63,7 @@ Do not paste an authorization code into a shell, issue, or source file. If Googl
 
 ### Read threads
 
-The inbox uses a default Gmail query that excludes promotions and social categories. Operators may enter Gmail search syntax and use pagination. Loading a thread fetches it from Gmail in full; thread results are not retained as a local mailbox mirror.
+The inbox uses a default Gmail query that excludes promotions and social categories. Operators may enter Gmail search syntax and use pagination. A list request uses a short-lived backend-memory access token and a bounded number of concurrent Gmail metadata requests; it returns compact summaries only. Loading a thread fetches that selected thread from Gmail in full. Neither path retains thread results as a local mailbox mirror, and restarting the backend discards the short-lived access-token cache.
 
 The API returns plain text plus sanitized HTML and attachment metadata. Attachment download is not implemented. If formatted HTML renders poorly, fall back to the returned plain text and do not add an unsanitized rendering path.
 
@@ -113,6 +113,7 @@ Reauthorization is appropriate when Gmail returns `401`, status indicates a miss
 | AI draft returns `402` | Optional AI provider quota exhausted. | Use manual reply or restore provider capacity; Gmail does not require AI. |
 | AI draft returns `503` | Optional AI configuration unavailable. | Add/repair optional key/settings without exposing them. |
 | AI draft returns `502` | Provider/network/model failure. | Retry only after confirming safe configuration/provider availability; manual reply remains available. |
+| Inbox is slow while detail loading is normal | Gmail list/provider metadata latency or a large requested page. | Use the safe browser `Server-Timing` response hint and redacted `performance_request`/`performance_database` backend log categories; do not collect message bodies, headers, tokens, or query values for diagnosis. |
 
 ## Recovery and Escalation
 
