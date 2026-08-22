@@ -14,7 +14,7 @@ Read [`../contracts/gmail.md`](../contracts/gmail.md) before changing configurat
 | Token storage | Do not edit `gmail_oauth_tokens` manually. The service encrypts/decrypts the refresh token and deletes it through the disconnect route. |
 | Browser access | Use the local console URL and approved browser session. Do not expose the unauthenticated console publicly. |
 | Email content | Treat message content as untrusted data. Render only server-provided sanitized HTML; do not add a browser path for raw provider HTML or attachment download. |
-| Sending | Review the final text. The UI requires `Senden vorbereiten`, then `Jetzt senden`; do not circumvent this flow. |
+| Sending | Review the final text. The UI requires `Senden vorbereiten`, then `Jetzt senden`, and creates one idempotency key for that confirmation; do not circumvent this flow or reuse a failed confirmation blindly. |
 | AI | AI drafts are optional, editable, non-sending, and limited to the selected thread plus bounded operator guidance. Do not use them as a verified source of operational facts. |
 
 ## Configuration
@@ -28,6 +28,7 @@ Complete these variables in the local `.env` and restart/recreate the backend af
 | `GMAIL_OAUTH_REDIRECT_URI` | Google OAuth | Must exactly match the registered Google redirect URI. Compose defaults to `http://localhost:${ERYDEZ_PORT:-8082}/api/gmail/oauth/callback`. |
 | `GMAIL_TOKEN_ENCRYPTION_KEY` | Token persistence | Valid Fernet key. Do not rotate it casually; existing ciphertext becomes unreadable without a migration/re-authorization plan. |
 | `OPENAI_API_KEY` | AI drafts only | Optional. Gmail manual read/reply can operate without it. |
+| `GMAIL_SEND_OPERATION_RETENTION_HOURS` | Duplicate-send prevention | Optional positive integer; default 24. Retains a thread/content hash, safe outcome, and key only; the Gmail message body is never stored. |
 | `OPENAI_API_BASE`, `GMAIL_AI_MODEL`, `GMAIL_AI_MAX_COMPLETION_TOKENS` | AI provider tuning | Optional provider/model/budget settings. |
 
 Google OAuth must allow the exact redirect URL currently exposed by the frontend port. If the host port changes, register the corresponding redirect URI and update `GMAIL_OAUTH_REDIRECT_URI` together. The code requests Gmail read-only and Gmail send scopes.
@@ -84,9 +85,10 @@ Treat risk flags, missing-information labels, and Shopify facts as prompts for o
 1. Write or edit the final content in the composer.
 2. Select **Senden vorbereiten** and verify the displayed recipient/thread context.
 3. Select **Jetzt senden** only when the final content is correct.
-4. The server reloads the Gmail thread and derives recipient, subject, `In-Reply-To`, and `References` headers from the provider source before sending.
+4. The browser holds one stable idempotency key for this confirmation. The server atomically reserves it, reloads the Gmail thread, and derives recipient, subject, `In-Reply-To`, and `References` headers from the provider source before sending.
+5. If the browser retries after a lost response, reuse the same still-visible confirmation: a completed key returns the prior safe result without a second Gmail call. If the console reports an unknown outcome, stop and refresh the thread before preparing any new confirmation.
 
-The endpoint intentionally ignores browser-supplied recipient/subject values because they are not accepted by the API contract. A successful send records safe console audit evidence, not message content.
+The endpoint intentionally ignores browser-supplied recipient/subject values because they are not accepted by the API contract. A successful send records safe console audit evidence and a short-lived hash-based idempotency result, not message content.
 
 ## Disconnect and Reauthorization
 
@@ -109,7 +111,9 @@ Reauthorization is appropriate when Gmail returns `401`, status indicates a miss
 | `401` on thread read/send | No token, revoked token, decrypt failure, or refresh rejection. | Reauthorize through UI; do not manipulate ciphertext. |
 | `409` on Gmail route | Local lifecycle is paused/disconnect pending/disconnected. | Inspect Settings integration state and resolve deliberately. |
 | HTML email looks unsafe/unformatted | Sanitizer removed content/unsafe markup; no HTML part exists. | Use plain-text fallback. Do not bypass the sanitizer. |
-| Send fails | Empty/oversized content, invalid source sender, provider failure, or lost authorization. | Preserve draft locally, inspect safe error, correct cause, and retry only after user review. |
+| Send fails with ordinary validation/authentication/provider error | Empty/oversized content, invalid source sender, provider failure before a confirmed send, or lost authorization. | Preserve draft locally, inspect safe error, correct cause, and retry only after user review. |
+| Send returns `502` with an unknown outcome | Gmail may have accepted the reply, but the local safe completion record could not be written. | Do **not** retry the same confirmation. Refresh the Gmail thread, determine whether the reply exists, and prepare a new explicit confirmation only when it is absent. |
+| Send returns `409` for an idempotency key | The key was reused for different content or its prior outcome is pending/unknown. | Do not change/retry the old confirmation. Refresh the thread and start a new visible confirmation only after review. |
 | AI draft returns `402` | Optional AI provider quota exhausted. | Use manual reply or restore provider capacity; Gmail does not require AI. |
 | AI draft returns `503` | Optional AI configuration unavailable. | Add/repair optional key/settings without exposing them. |
 | AI draft returns `502` | Provider/network/model failure. | Retry only after confirming safe configuration/provider availability; manual reply remains available. |

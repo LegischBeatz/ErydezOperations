@@ -168,3 +168,51 @@ def test_public_integration_ledger_item_preserves_safe_control_metadata_only():
     assert result["duration_seconds"] == 0
     assert "provider_payload" not in result
     assert "secret_reference" not in result
+
+
+class FakeSendOperationCollection:
+    def __init__(self):
+        self.documents = {}
+
+    async def insert_one(self, document):
+        key = document["id"]
+        if key in self.documents:
+            raise server.DuplicateKeyError("duplicate idempotency key")
+        self.documents[key] = dict(document)
+
+    async def find_one(self, query, projection):
+        del projection
+        document = self.documents.get(query["id"])
+        return dict(document) if document else None
+
+    async def update_one(self, query, update):
+        self.documents[query["id"]].update(update["$set"])
+
+
+def test_gmail_send_idempotency_replays_safe_result_without_storing_body(monkeypatch):
+    import asyncio
+
+    collection = FakeSendOperationCollection()
+    monkeypatch.setattr(server, "db", {server.GMAIL_SEND_OPERATIONS: collection})
+    key = "local-send-operation-key-0001"
+
+    async def scenario():
+        first = await server.start_gmail_send_operation("thread-1", "Customer-safe reply body", key)
+        assert first is None
+        stored = collection.documents[key]
+        assert stored["thread_id"] == "thread-1"
+        assert "content" not in stored
+        assert "Customer-safe reply body" not in str(stored)
+
+        safe_result = {"id": "message-1", "thread_id": "thread-1", "recipient": "customer@example.com"}
+        await server.complete_gmail_send_operation(key, safe_result)
+        assert await server.start_gmail_send_operation("thread-1", "Customer-safe reply body", key) == safe_result
+
+        try:
+            await server.start_gmail_send_operation("thread-1", "Different reviewed reply", key)
+        except server.HTTPException as exc:
+            assert exc.status_code == 409
+        else:
+            raise AssertionError("A duplicate key must not be reused for different content")
+
+    asyncio.run(scenario())

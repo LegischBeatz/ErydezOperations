@@ -17,12 +17,14 @@ The application does not implement Shopify mutations, scheduled synchronization,
 | Component | Responsibility | Depends on | Must not own |
 |---|---|---|---|
 | React SPA | Renders primary operations routes, global snapshot search, Settings, and Gmail workspace. | `frontend/src/lib/api.js`, SWR, React Router | Provider credentials, direct provider transport, canonical persistence |
-| API client | Centralizes browser requests under `/api`; production uses same-origin requests. | Axios, `REACT_APP_BACKEND_URL` for separate development | Data normalization or provider-specific secrets |
-| FastAPI service | Exposes health, snapshot, canonical-query, control-plane, and Gmail endpoints. Creates indexes and coordinates snapshot activation. | MongoDB, Shopify adapter, Gmail service | Frontend presentation or external schedule management |
+| API client | Centralizes browser requests under `/api`, supplies local browser-mutation provenance, and uses same-origin requests in production. | Axios, `REACT_APP_BACKEND_URL` for separate development | Data normalization, provider-specific secrets, or operator identity |
+
+| FastAPI service | Exposes health, snapshot, canonical-query, control-plane, and Gmail endpoints. Creates indexes, coordinates snapshot activation, rejects cross-site browser mutations, and records bounded local evidence. | MongoDB, Shopify adapter, Gmail service | Frontend presentation, application identity, or external schedule management |
+
 | Shopify adapter | Loads configuration, obtains/reuses an access token, makes Admin GraphQL requests, retries/throttles, cursor-paginates, and normalizes snapshots. | Shopify Admin GraphQL | Persistent operational authority or browser behavior |
 | Gmail service | Implements OAuth authorization-code flow, Fernet token encryption, Gmail reads, sanitized HTML, reply construction, and optional AI draft generation from a server-supplied minimized fact card. | Google OAuth/Gmail REST, MongoDB, optional OpenAI-compatible API | Background Gmail synchronization, automatic sending, Shopify lookup, or canonical persistence |
 | MongoDB | Persists canonical snapshot collections, active metadata, sync history, integration control records, OAuth state, and encrypted refresh tokens. | Compose data network | Shopify authority or unauthenticated public access |
-| Nginx | Serves the compiled SPA, exposes `/healthz`, proxies `/api/`, and falls back to `index.html` for SPA routing. | Internal backend service | Application authentication or TLS |
+| Nginx | Serves the compiled SPA, exposes `/healthz`, proxies `/api/`, falls back to `index.html` for SPA routing, and applies same-origin browser security headers. | Internal backend service | Application authentication or TLS |
 
 ## Deployment Topology
 
@@ -60,7 +62,7 @@ This topology is **not a public-service architecture**. The repository does not 
 
 ### Canonical Query Flow
 
-Canonical query routes first resolve the active snapshot identifier. Lists and aggregate routes query only records with that `sync_id`; therefore all commerce pages view a consistent snapshot. Orders, inventory, and customers execute directly expressible filters in MongoDB before count/page retrieval. Products likewise apply text/status predicates in MongoDB before their current compatible list response. The legacy business-day threshold filters retain their exact calendar-aware rule after inexpensive snapshot filters. Independent family queries in global search execute concurrently, but still return only active-snapshot records.
+Canonical query routes first resolve the active snapshot identifier. Lists and aggregate routes query only records with that `sync_id`; therefore all commerce pages view a consistent snapshot. The overview computes cards, statuses, recent orders, low-stock results, and top products in MongoDB aggregation pipelines rather than materializing complete order/product/inventory collections in FastAPI. Orders, inventory, and customers execute directly expressible filters in MongoDB before count/page retrieval. Products and legacy non-paginated canonical lists use explicit bounded response limits; product detail relationships and inventory/customer order expansions are likewise bounded. The legacy business-day threshold filters retain their exact calendar-aware rule after a conservative indexed calendar candidate bound. Independent family queries in global search execute concurrently and ask each family for no more than eight active-snapshot records.
 
 An API readiness response proves MongoDB connectivity and reports whether a snapshot is active. It does not validate live Shopify connectivity. If no snapshot is active, canonical query routes return `503` rather than fabricate data.
 
@@ -70,7 +72,7 @@ An API readiness response proves MongoDB connectivity and reports whether a snap
 2. When configured, `GET /api/gmail/oauth/start` writes a hash of a random state value with a ten-minute expiry, then redirects to Google consent. The callback consumes that state once, exchanges the authorization code, and stores only a Fernet-encrypted refresh token in MongoDB.
 3. Thread-list and thread-detail requests call Gmail on demand. The encrypted refresh token remains persistent, while the resulting access token is held only in backend process memory until shortly before provider expiry. Thread-list metadata reads use bounded concurrency and return compact summaries; detail requests return normalized thread/message fields, attachment metadata, plain-text `body`, and allow-list-sanitized `htmlBody`. Neither path creates a local mailbox mirror.
 4. AI draft generation reads the selected normalized thread and returns an editable draft; it does not write a message or send mail. When the thread has exactly one explicit numeric order reference, the FastAPI layer may read one matching order from the active Shopify snapshot and supply a minimized, transient fact card to the optional AI provider. It never performs a live Shopify request, mutation, customer-identity lookup, partial-reference lookup, or Gmail/Shopify data persistence.
-5. Sending accepts only `thread_id` and `content`. The server reloads the Gmail source thread, derives the recipient, subject, and reply headers from the most recent inbound message, and then calls Gmail send.
+5. Sending accepts only `thread_id`, `content`, and a per-confirmation idempotency key. The server atomically reserves the key using only a content hash, reloads the Gmail source thread, derives recipient, subject, and reply headers from the most recent inbound message, then calls Gmail send. Completed keys replay their safe result; uncertain provider outcomes are never automatically retried.
 
 ## MongoDB Collections
 
@@ -78,12 +80,14 @@ An API readiness response proves MongoDB connectivity and reports whether a snap
 |---|---|---|
 | Canonical Shopify snapshot | `shop`, `orders`, `products`, `variants`, `inventory_items`, `customers`, `fulfillments`, `refunds`, `returns` | Each record has a `sync_id`; non-active snapshots are removed after successful activation. |
 | Snapshot metadata | `meta`, `sync_runs` | `meta.id = "shopify_sync"` identifies the active snapshot. Sync runs retain recent run status, counts, progress, validation, cleanup, and bounded error text. |
-| Integration control plane | `integration_connections`, `integration_health_snapshots`, `integration_audit_events` | Console-owned readiness, lifecycle, ownership, health, and audit records; not provider payload storage. |
+| Integration control plane | `integration_connections`, `integration_health_snapshots`, `integration_audit_events` | Console-owned readiness, lifecycle, ownership, health, and audit records; TTL-retained safe metadata only, never provider payload storage. |
+| Gmail send deduplication | `gmail_send_operations` | Short-lived idempotency key, thread ID, content hash, status, and safe provider result; never a message-body store. |
+
 | Gmail authorization and refresh state | `gmail_oauth_tokens`, `gmail_oauth_states`, `gmail_sync_state` | Refresh token ciphertext and safe connection metadata; state hashes expire through a TTL index; no Gmail thread/message mirror. |
 
 ## Interface Boundaries
 
-`frontend/src/lib/api.js` is the required browser API boundary. `backend/server.py` is the implemented HTTP contract. Provider-specific normalization must stay in `backend/shopify.py` and `backend/gmail_service.py`.
+`frontend/src/lib/api.js` is the required browser API boundary. It supplies `X-Erydez-Request: local-console` for unsafe browser methods. `backend/server.py` is the implemented HTTP contract and verifies same-origin/Fetch-Metadata provenance for browser mutations; requests without browser provenance remain the approved local CLI path. Provider-specific normalization must stay in `backend/shopify.py` and `backend/gmail_service.py`.
 
 | Boundary | Compatibility expectation |
 |---|---|
@@ -98,9 +102,11 @@ An API readiness response proves MongoDB connectivity and reports whether a snap
 |---|---|---|
 | Consistency | Full snapshot validation gates activation; previous snapshot stays active during staging/failure. | No incremental Shopify updates or real-time provider changes. |
 | Availability | MongoDB readiness endpoint, Compose health checks, restart policies, and previous-snapshot retention. | One FastAPI worker, one MongoDB instance, no external monitoring or alerting. |
-| Security | Secrets remain environment-only; token redaction; encrypted Gmail refresh tokens; sanitized email HTML; loopback-published frontend. | No application authentication, authorization, TLS, tenant isolation, or secret-management service. |
+| Security | Secrets remain environment-only; bounded provider-error redaction; encrypted Gmail refresh tokens; sanitized email HTML; loopback-published frontend; same-origin CSP/headers and local browser-mutation provenance guard. | No application authentication, authorization, TLS, tenant isolation, or secret-management service. |
+
 | Privacy | Public API serializers omit credential fields and provider payloads. Gmail messages are not persisted as a local mailbox. | Canonical commerce and Gmail OAuth data persist in MongoDB; backup and host access require operator controls. |
-| Performance | MongoDB indexes cover active snapshot and common filters; directly expressible commerce filters run in MongoDB before page transfer; Shopify connection pagination is bounded to provider page sizes; Gmail list metadata concurrency is bounded. | Product, fulfillment, refund, return, overview, and full-sync work still scale with accessible store data; no background job system exists. |
+| Performance | MongoDB indexes cover active snapshot and common filters; overview cards are database aggregations; directly expressible commerce filters run in MongoDB before page transfer; heavy compatible list/detail responses are bounded; Shopify connection pagination is bounded to provider page sizes; Gmail list metadata concurrency is bounded. | Full sync still stages a complete accessible Shopify snapshot; aggregates and retained compatibility paths still scale with store data; no background job system exists. |
+
 | Observability | Health endpoints, sync-run records, integration audit/ledger records, container logs, safe route/database duration logs, and `Server-Timing` application duration hints. | No metrics endpoint, tracing, alert manager, or scheduled health action. |
 | Recovery | Failed staging leaves the active snapshot available; Compose volume persists database data. | Semantic recovery after a bad-but-valid snapshot is manual and depends on an operator-maintained logical backup. |
 

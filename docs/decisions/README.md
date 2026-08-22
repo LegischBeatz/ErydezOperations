@@ -9,6 +9,7 @@ This directory records durable choices already reflected in the current implemen
 | [0003](0003-shopify-authoritative-snapshots.md) | Treat Shopify as authority and expose validated active snapshots. | `backend/shopify.py`, `backend/server.py` |
 | [0004](0004-gmail-integration-mcp-connector.md) | Use direct Google OAuth and Gmail REST with encrypted refresh tokens. | `backend/gmail_service.py`, Gmail routes/UI |
 | [0005](0005-ai-draft-operator-guidance.md) | Keep AI guidance bounded, ephemeral, and subordinate to safety rules. | Gmail composer and draft service |
+| [0009](0009-local-request-hardening-retention-and-idempotent-gmail-send.md) | Retain the local single-operator model while hardening browser mutations, bounding local evidence, and preventing duplicate confirmed Gmail sends. | API client, FastAPI middleware, MongoDB TTL indexes, Gmail composer, Nginx, Compose, contracts, and runbooks |
 
 Create or amend an ADR when changing the commerce source of truth, snapshot activation, provider authorization, token/secret handling, external write behavior, deployment exposure, compatibility strategy, or recovery model. Each record must describe context, decision, alternatives, consequences, risks, and implementation notes based on the code that will ship.
 

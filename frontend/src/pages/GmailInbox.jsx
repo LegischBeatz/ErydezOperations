@@ -131,6 +131,11 @@ function deduplicateThreads(threads) {
   return [...byId.values()];
 }
 
+function createSendOperationId() {
+  if (typeof window !== "undefined" && window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}-local-send`;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Inbox list                                                                  */
 /* -------------------------------------------------------------------------- */
@@ -452,6 +457,7 @@ function Composer({ thread, aiAvailable, onSent }) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [sendOperationId, setSendOperationId] = useState(null);
   const [showGuidance, setShowGuidance] = useState(false);
 
   useEffect(() => {
@@ -460,6 +466,7 @@ function Composer({ thread, aiAvailable, onSent }) {
     setAiInstructions("");
     setSelectedProfile("");
     setShowConfirm(false);
+    setSendOperationId(null);
     setShowGuidance(false);
   }, [thread?.id]);
 
@@ -491,14 +498,17 @@ function Composer({ thread, aiAvailable, onSent }) {
 
   const handleSend = async () => {
     if (!draft.trim() || !replyTo || !thread?.id) return;
+    const idempotencyKey = sendOperationId || createSendOperationId();
+    if (!sendOperationId) setSendOperationId(idempotencyKey);
     setIsSending(true);
     try {
-      await api.gmailSend({ content: draft.trim(), thread_id: thread.id });
+      await api.gmailSend({ content: draft.trim(), thread_id: thread.id, idempotency_key: idempotencyKey });
       toast.success("E-Mail gesendet", { description: `Die Antwort wurde an ${replyTo} im bestehenden Thread gesendet.` });
       setDraft("");
       setAiMeta(null);
       setAiInstructions("");
       setShowConfirm(false);
+      setSendOperationId(null);
       onSent?.();
     } catch (error) {
       toast.error("Senden fehlgeschlagen", { description: error?.response?.data?.detail || error.message });
@@ -578,6 +588,8 @@ function Composer({ thread, aiAvailable, onSent }) {
         value={draft}
         onChange={(event) => {
           setDraft(event.target.value);
+          setShowConfirm(false);
+          setSendOperationId(null);
           if (aiMeta) setAiMeta({ ...aiMeta, disclaimer: "KI-Entwurf wurde manuell bearbeitet. Bitte prüfen Sie die finale Antwort vor dem Versand." });
         }}
         placeholder={replyTo ? "Antwort schreiben…" : "Für diesen Thread kann keine Antwort vorbereitet werden."}
@@ -606,7 +618,10 @@ function Composer({ thread, aiAvailable, onSent }) {
         {!showConfirm ? (
           <button
             type="button"
-            onClick={() => setShowConfirm(true)}
+            onClick={() => {
+              setSendOperationId(createSendOperationId());
+              setShowConfirm(true);
+            }}
             disabled={!draft.trim() || !replyTo}
             className="inline-flex h-9 items-center gap-1.5 rounded-md bg-brand px-4 text-sm font-semibold text-white transition-colors hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
             data-testid="gmail-prepare-send-btn"
@@ -629,7 +644,10 @@ function Composer({ thread, aiAvailable, onSent }) {
             </button>
             <button
               type="button"
-              onClick={() => setShowConfirm(false)}
+              onClick={() => {
+                setShowConfirm(false);
+                setSendOperationId(null);
+              }}
               className="h-8 rounded-md border border-line bg-surface px-2.5 text-xs font-semibold text-inkmed transition-colors hover:bg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
               data-testid="gmail-cancel-send-btn"
             >

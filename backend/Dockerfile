@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir --requirement requirements-runtime.txt
 
 RUN useradd --create-home --uid 10001 erydez
 
-COPY --chown=erydez:erydez server.py seed.py shopify.py gmail_service.py ./
+COPY --chown=erydez:erydez server.py seed.py shopify.py gmail_service.py draft_facts.py ./
 
 USER erydez
 

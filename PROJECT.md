@@ -15,19 +15,22 @@ The current codebase provides a safe, read-oriented operations surface for Shopi
 | Preserve a consistent commerce view | A complete Shopify snapshot is fetched, normalized, validated, staged under a new `sync_id`, and activated only after validation succeeds. |
 | Make commerce data operationally usable | The UI exposes overview, orders, products, inventory, customers, fulfillment, returns/refunds, reports, and active-snapshot search. |
 | Keep provider ownership explicit | Shopify canonical records are read-only; legacy write compatibility routes return `409`, and legacy reset returns `410`. |
-| Support controlled customer-email work | Gmail OAuth tokens are encrypted at rest; threads are refreshed on demand; replies require explicit confirmation; AI produces drafts only. |
+| Support controlled customer-email work | Gmail OAuth tokens are encrypted at rest; threads are refreshed on demand; replies require explicit confirmation with a per-confirmation idempotency key; AI produces drafts only. |
+
 | Keep local deployment reproducible | Docker Compose runs a React bundle behind Nginx, FastAPI, and authenticated MongoDB, with health-gated startup. |
 
 ## System Snapshot
 
 | Area | Implemented state | Important boundary |
 |---|---|---|
-| Browser client | React 19 SPA with React Router, SWR, Axios, Tailwind, and Radix-based UI components. The primary navigation covers commerce data, Gmail, audit/ledger views, and settings. | All backend calls go through `frontend/src/lib/api.js`. |
+| Browser client | React 19 SPA with React Router, SWR, Axios, Tailwind, and Radix-based UI components. The primary navigation covers commerce data, Gmail, audit/ledger views, and settings. | All backend calls go through `frontend/src/lib/api.js`, which supplies local browser-mutation provenance. |
+
 | API | FastAPI application in `backend/server.py` with `/api` routes for health, Shopify snapshots, canonical queries, integration control, and Gmail. | It requires `MONGO_URL` and `DB_NAME` at import time. |
 | Commerce adapter | `backend/shopify.py` authenticates, calls the Shopify Admin GraphQL API, cursor-paginates accessible entities, normalizes them, and builds full snapshots. | Shopify remains authoritative; the console does not write Shopify. |
 | Gmail adapter | `backend/gmail_service.py` performs OAuth, refreshes access tokens, retrieves/sanitizes Gmail content, sends thread replies, and optionally requests an OpenAI draft. | No watch, webhook, or background Gmail synchronization exists. |
-| Persistence | MongoDB stores Shopify snapshot collections, snapshot metadata, sync history, integration registry/audit data, Gmail OAuth states, encrypted refresh tokens, and Gmail refresh metadata. | MongoDB is persistent local application storage, not a second commerce authority. |
-| Deployment | Compose runs a non-root single-worker backend, internal MongoDB, and Nginx frontend. Only the frontend is published, bound to `127.0.0.1:${ERYDEZ_PORT:-8082}`. | The application uses plain HTTP and has no application authentication, authorization, tenant isolation, or TLS. |
+| Persistence | MongoDB stores Shopify snapshot collections, snapshot metadata, bounded sync history, TTL-retained integration evidence, Gmail OAuth states, encrypted refresh tokens, Gmail refresh metadata, and short-lived hashed Gmail-send idempotency records. | MongoDB is persistent local application storage, not a second commerce authority or a Gmail message mirror. |
+
+| Deployment | Compose runs a non-root single-worker backend, internal MongoDB, and Nginx frontend. Only the frontend is published, bound to `127.0.0.1:${ERYDEZ_PORT:-8082}`. Nginx applies same-origin browser security headers and FastAPI rejects cross-site browser mutations. | The application uses plain HTTP and has no application authentication, authorization, tenant isolation, or TLS. |
 
 ## Technology Stack
 
@@ -41,9 +44,9 @@ The current codebase provides a safe, read-oriented operations surface for Shopi
 
 ## Safety and Capability Boundaries
 
-The browser client can initiate a full Shopify sync, but no periodic sync job, webhook consumer, or background worker is implemented. An active snapshot is required for canonical commerce queries; a healthy database without a snapshot reports readiness but canonical routes return `503`.
+The browser client can initiate a full Shopify sync, but no periodic sync job, webhook consumer, or background worker is implemented. An active snapshot is required for canonical commerce queries; a healthy database without a snapshot reports readiness but canonical routes return `503`. Browser mutations require same-origin/Fetch-Metadata provenance plus the central client header; this is a local CSRF-style guard, not authentication and not a remote-exposure design.
 
-Gmail has separate capabilities. It requests only Gmail read and send scopes, stores the refresh token encrypted with a Fernet key supplied through the environment, and retains OAuth state hashes for ten minutes. The server returns sanitized HTML for message display and uses `body` as a plain-text fallback. The send path derives recipient, subject, `In-Reply-To`, and `References` headers from Gmail’s source thread instead of trusting browser-supplied headers.
+Gmail has separate capabilities. It requests only Gmail read and send scopes, stores the refresh token encrypted with a Fernet key supplied through the environment, and retains OAuth state hashes for ten minutes. The server returns sanitized HTML for message display and uses `body` as a plain-text fallback. The send path derives recipient, subject, `In-Reply-To`, and `References` headers from Gmail’s source thread instead of trusting browser-supplied headers. It atomically reserves a short-lived hashed idempotency key per visible confirmation and blocks an automatic retry if the external send outcome cannot be safely confirmed.
 
 ## Documentation Map
 

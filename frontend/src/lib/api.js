@@ -1,10 +1,16 @@
 import axios from "axios";
 
-const BASE = `${process.env.REACT_APP_BACKEND_URL}/api`;
+const backendOrigin = (process.env.REACT_APP_BACKEND_URL || "").replace(/\/$/, "");
+const BASE = `${backendOrigin}/api`;
+const mutationConfig = {
+  headers: {
+    "X-Erydez-Request": "local-console",
+  },
+};
+
 const get = (path, params) => axios.get(`${BASE}${path}`, { params }).then((response) => response.data);
-const post = (path, body) => axios.post(`${BASE}${path}`, body).then((response) => response.data);
-const adminPost = (path, body) => axios.post(`${BASE}${path}`, body).then((response) => response.data);
-const patch = (path, body) => axios.patch(`${BASE}${path}`, body).then((response) => response.data);
+const post = (path, body) => axios.post(`${BASE}${path}`, body, mutationConfig).then((response) => response.data);
+const patch = (path, body) => axios.patch(`${BASE}${path}`, body, mutationConfig).then((response) => response.data);
 
 export const api = {
   overview: () => get("/overview"),
@@ -26,12 +32,13 @@ export const api = {
   integrations: () => get("/integrations"),
   integration: (id) => get(`/integrations/${encodeURIComponent(id)}`),
   integrationHealth: (id) => get(`/integrations/${encodeURIComponent(id)}/health`),
+  recordIntegrationHealth: (id) => post(`/integrations/${encodeURIComponent(id)}/health`, {}),
   integrationAudit: (id) => get(`/integrations/${encodeURIComponent(id)}/audit`),
   auditTimeline: () => get("/audit-timeline"),
   providerLedger: () => get("/provider-ledger"),
-  initializeGmailReadiness: (reason) => adminPost("/integrations/gmail/initialize", { reason }),
-  changeIntegrationLifecycle: (id, action, reason) => adminPost(`/integrations/${encodeURIComponent(id)}/lifecycle`, { action, reason }),
-  assignIntegrationRecoveryOwner: (id, displayName, reason) => adminPost(`/integrations/${encodeURIComponent(id)}/recovery-owner`, { display_name: displayName, reason }),
+  initializeGmailReadiness: (reason) => post("/integrations/gmail/initialize", { reason }),
+  changeIntegrationLifecycle: (id, action, reason) => post(`/integrations/${encodeURIComponent(id)}/lifecycle`, { action, reason }),
+  assignIntegrationRecoveryOwner: (id, displayName, reason) => post(`/integrations/${encodeURIComponent(id)}/recovery-owner`, { display_name: displayName, reason }),
   shopifyStatus: (live = true) => get("/shopify/status", { live }),
   syncRuns: () => get("/shopify/sync-runs"),
   syncShopify: () => post("/shopify/sync", {}),
@@ -45,30 +52,4 @@ export const api = {
   // Optional payload fields: sender_name, language, instructions, profile_id.
   gmailAiReply: (threadId, payload) => post(`/gmail/threads/${encodeURIComponent(threadId)}/ai-reply`, payload || {}),
   gmailSend: (body) => post("/gmail/send", body),
-
-  // Temporary compatibility helpers for pages removed from primary navigation.
-  workItems: (view) => get("/work-items", { view }),
-  updateWorkItem: (id, body) => patch(`/work-items/${id}`, body),
-  addNote: (id, text) => post(`/orders/${id}/notes`, { text }),
-  pauseUpdates: (id, body) => post(`/orders/${id}/pause-updates`, body),
-  addTimelineEvent: (id, body) => post(`/orders/${id}/timeline`, body),
-  conversations: (filter) => get("/conversations", { filter }),
-  conversation: (id) => get(`/conversations/${id}`),
-  sendMessage: (id, body) => post(`/conversations/${id}/messages`, body),
-  updateConversation: (id, body) => patch(`/conversations/${id}`, body),
-  advanceFulfillment: (id, body) => post(`/fulfillment/${id}/advance`, body || {}),
-  scanFulfillment: (id, code) => post(`/fulfillment/${id}/scan`, { code }),
-  rma: (id) => get(`/returns/${id}`),
-  updateReturn: (id, body) => patch(`/returns/${id}`, body),
-  appointments: () => get("/appointments"),
-  updateAppointment: (id, body) => patch(`/appointments/${id}`, body),
-  automations: () => get("/automations"),
-  updateAutomation: (id, body) => patch(`/automations/${id}`, body),
-  runs: () => get("/automations/runs"),
-  run: (id) => get(`/automations/runs/${id}`),
-  approvals: () => get("/approvals"),
-  decideApproval: (id, body) => post(`/approvals/${id}/decision`, body),
-  notifications: () => get("/notifications"),
-  markNotification: (id) => patch(`/notifications/${id}`),
-  purchasing: () => get("/purchasing"),
 };

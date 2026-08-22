@@ -1,22 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
 import time
 import uuid
-from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 from draft_facts import build_shopify_fact_card, extract_thread_order_references
 from fastapi import APIRouter, Body, FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse, RedirectResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ASCENDING, DESCENDING, IndexModel
-from pymongo.errors import PyMongoError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 
@@ -37,7 +39,17 @@ mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
 
-app = FastAPI(title="E-RYDEZ Operations Console API", version="2.0.0")
+@asynccontextmanager
+async def application_lifespan(_: FastAPI):
+    await ensure_indexes()
+    logging.info("Shopify canonical schema initialized; mock seeding is disabled")
+    try:
+        yield
+    finally:
+        client.close()
+
+
+app = FastAPI(title="E-RYDEZ Operations Console API", version="2.1.0", lifespan=application_lifespan)
 api = APIRouter(prefix="/api")
 logger = logging.getLogger(__name__)
 
@@ -71,8 +83,28 @@ MOCK_ONLY_COLLECTIONS = (
 INTEGRATION_CONNECTIONS = "integration_connections"
 INTEGRATION_HEALTH = "integration_health_snapshots"
 INTEGRATION_AUDIT = "integration_audit_events"
+GMAIL_SEND_OPERATIONS = "gmail_send_operations"
 LOCAL_OPERATOR_LABEL = os.environ.get("ERYDEZ_LOCAL_OPERATOR_LABEL", "Local operator").strip() or "Local operator"
+CORS_ORIGINS = tuple(origin.strip() for origin in os.environ.get("CORS_ORIGINS", "").split(",") if origin.strip())
+LOCAL_BROWSER_REQUEST_HEADER = "x-erydez-request"
+LOCAL_BROWSER_REQUEST_VALUE = "local-console"
+SAFE_HTTP_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _sync_lock = asyncio.Lock()
+
+
+def positive_integer_env(name: str, default: int) -> int:
+    """Read a bounded positive local retention/configuration value."""
+    try:
+        return max(1, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s value; using safe default", name)
+        return default
+
+
+INTEGRATION_HEALTH_RETENTION_DAYS = positive_integer_env("INTEGRATION_HEALTH_RETENTION_DAYS", 90)
+INTEGRATION_AUDIT_RETENTION_DAYS = positive_integer_env("INTEGRATION_AUDIT_RETENTION_DAYS", 365)
+GMAIL_SEND_OPERATION_RETENTION_HOURS = positive_integer_env("GMAIL_SEND_OPERATION_RETENTION_HOURS", 24)
 
 
 def _performance_route_label(path: str) -> str:
@@ -91,11 +123,51 @@ def _performance_route_label(path: str) -> str:
     return path
 
 
+def request_origin(request: Request) -> str | None:
+    """Return the browser origin represented by the proxied request without trusting a query/body value."""
+    host = request.headers.get("host", "").strip()
+    if not host:
+        return None
+    scheme = request.headers.get("x-forwarded-proto", request.url.scheme).split(",", 1)[0].strip() or request.url.scheme
+    return f"{scheme}://{host}"
+
+
+def local_browser_mutation_is_trusted(request: Request) -> bool:
+    """Reject cross-site browser mutations while retaining documented local CLI and CORS-dev workflows.
+
+    The packaged application has no user session or public exposure.  This helper is
+    deliberately a browser request-provenance guard, not an authentication layer.
+    Requests without browser provenance remain available to the approved local CLI.
+    """
+    fetch_site = request.headers.get("sec-fetch-site", "").lower()
+    origin = request.headers.get("origin")
+    expected_origin = request_origin(request)
+    trusted_origins = {origin for origin in (*CORS_ORIGINS, expected_origin) if origin}
+
+    if fetch_site == "cross-site":
+        return False
+    if origin and origin not in trusted_origins:
+        return False
+    if fetch_site in {"same-origin", "same-site", "none"} or origin:
+        return request.headers.get(LOCAL_BROWSER_REQUEST_HEADER) == LOCAL_BROWSER_REQUEST_VALUE
+    return True
+
+
 @app.middleware("http")
 async def observe_api_request_timing(request: Request, call_next):
-    """Emit safe route timing and expose an app-duration hint without request data."""
+    """Reject untrusted browser mutations and emit safe route timing without request data."""
     started = time.perf_counter()
     route = _performance_route_label(request.url.path)
+    if request.url.path.startswith("/api/") and request.method not in SAFE_HTTP_METHODS:
+        if not local_browser_mutation_is_trusted(request):
+            duration_ms = (time.perf_counter() - started) * 1000
+            logger.warning(
+                "local_request_rejected method=%s route=%s reason=untrusted_browser_mutation duration_ms=%.2f",
+                request.method,
+                route,
+                duration_ms,
+            )
+            return JSONResponse(status_code=403, content={"detail": "Cross-site browser mutations are not allowed for this local console"})
     try:
         response = await call_next(request)
     except Exception:
@@ -195,6 +267,18 @@ def business_day_age(value: str | None) -> int:
     return count
 
 
+def business_day_candidate_cutoff(threshold: int) -> str:
+    """Return a conservative date bound that cannot exclude an order over the weekday threshold."""
+    return (datetime.now(timezone.utc) - timedelta(days=max(1, threshold) * 2)).isoformat().replace("+00:00", "Z")
+
+
+def aggregate_counter(rows: list[dict[str, Any]]) -> dict[str, int]:
+    return {str(row.get("_id") or "UNKNOWN"): int(row.get("count") or 0) for row in rows}
+
+
+
+
+
 def order_with_derived(order: dict[str, Any]) -> dict[str, Any]:
     result = dict(order)
     result["business_day_age"] = business_day_age(order.get("processed_at") or order.get("created_at"))
@@ -254,13 +338,15 @@ def public_audit_timeline_item(event: dict[str, Any], connection: dict[str, Any]
 
 
 def safe_provider_error_summary(value: Any) -> str | None:
-    """Return a bounded diagnostic summary without token-like values."""
+    """Return a bounded diagnostic summary without credentials or bearer material."""
     if not value:
         return None
     summary = str(value).strip()
-    summary = re.sub(r"\b(?:shpss|shpat)_[A-Za-z0-9_-]+\b", "[redacted]", summary)
+    summary = re.sub(r"\b(?:shpss|shpat|sk)_[A-Za-z0-9_-]+\b", "[redacted]", summary)
+    summary = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+\-/=]+", "Bearer [redacted]", summary)
+    summary = re.sub(r"(?i)(mongodb(?:\+srv)?://)[^\s/@:]+(?::[^\s/@]+)?@", r"\1[redacted]@", summary)
     summary = re.sub(
-        r"(?i)\b(client[ _-]?secret|access[ _-]?token|refresh[ _-]?token|authorization)\s*[:=]\s*\S+",
+        r"(?i)\b(client[ _-]?secret|access[ _-]?token|refresh[ _-]?token|authorization|api[ _-]?key|password)\s*[:=]\s*\S+",
         r"\1=[redacted]",
         summary,
     )
@@ -361,6 +447,10 @@ def connection_health(connection: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def retention_expiry(days: int) -> datetime:
+    return datetime.now(timezone.utc) + timedelta(days=days)
+
+
 async def append_integration_audit(
     connection_id: str,
     actor: str,
@@ -380,9 +470,52 @@ async def append_integration_audit(
         "next_state": next_state,
         "outcome": outcome,
         "created_at": integration_now(),
+        "expires_at": retention_expiry(INTEGRATION_AUDIT_RETENTION_DAYS),
     }
     await db[INTEGRATION_AUDIT].insert_one(event)
-    return {key: value for key, value in event.items() if key != "_id"}
+    return {key: value for key, value in event.items() if key not in {"_id", "expires_at"}}
+
+
+async def start_gmail_send_operation(thread_id: str, content: str, idempotency_key: str) -> dict[str, Any] | None:
+    """Atomically reserve a Gmail send key without storing the email body."""
+    if not IDEMPOTENCY_KEY_PATTERN.fullmatch(idempotency_key):
+        raise HTTPException(status_code=422, detail="A valid Gmail idempotency key is required")
+    content_hash = hashlib.sha256(f"{thread_id}\0{content}".encode("utf-8")).hexdigest()
+    operation = {
+        "id": idempotency_key,
+        "thread_id": thread_id,
+        "content_hash": content_hash,
+        "status": "sending",
+        "created_at": integration_now(),
+        "expires_at": datetime.now(timezone.utc) + timedelta(hours=GMAIL_SEND_OPERATION_RETENTION_HOURS),
+    }
+    try:
+        await db[GMAIL_SEND_OPERATIONS].insert_one(operation)
+        return None
+    except DuplicateKeyError:
+        existing = await db[GMAIL_SEND_OPERATIONS].find_one({"id": idempotency_key}, NO_ID)
+        if not existing or existing.get("thread_id") != thread_id or existing.get("content_hash") != content_hash:
+            raise HTTPException(status_code=409, detail="The Gmail idempotency key cannot be reused for different content")
+        if existing.get("status") == "completed":
+            return existing.get("result") or {"thread_id": thread_id}
+        raise HTTPException(
+            status_code=409,
+            detail="The prior Gmail send outcome is not retry-safe; refresh the thread and prepare a new confirmation if needed",
+        )
+
+
+async def complete_gmail_send_operation(idempotency_key: str, result: dict[str, Any]) -> None:
+    await db[GMAIL_SEND_OPERATIONS].update_one(
+        {"id": idempotency_key},
+        {"$set": {"status": "completed", "completed_at": integration_now(), "result": result}},
+    )
+
+
+async def mark_gmail_send_outcome_unknown(idempotency_key: str) -> None:
+    await db[GMAIL_SEND_OPERATIONS].update_one(
+        {"id": idempotency_key},
+        {"$set": {"status": "outcome_unknown", "completed_at": integration_now()}},
+    )
 
 
 async def integration_connection_or_404(connection_id: str) -> dict[str, Any]:
@@ -467,10 +600,12 @@ async def ensure_indexes() -> None:
             IndexModel([("lifecycle_state", ASCENDING)], name="lifecycle_state"),
             IndexModel([("updated_at", DESCENDING)], name="connections_updated"),
         ]
-    )
+        )
     await db[INTEGRATION_HEALTH].create_indexes(
+
         [
             IndexModel([("connection_id", ASCENDING), ("checked_at", DESCENDING)], name="connection_health_history"),
+            IndexModel([("expires_at", ASCENDING)], name="connection_health_expiry", expireAfterSeconds=0),
         ]
     )
     await db[INTEGRATION_AUDIT].create_indexes(
@@ -478,8 +613,16 @@ async def ensure_indexes() -> None:
             IndexModel([("created_at", DESCENDING)], name="audit_timeline_created"),
             IndexModel([("connection_id", ASCENDING), ("created_at", DESCENDING)], name="connection_audit_history"),
             IndexModel([("actor", ASCENDING), ("created_at", DESCENDING)], name="connection_audit_actor"),
+            IndexModel([("expires_at", ASCENDING)], name="connection_audit_expiry", expireAfterSeconds=0),
         ]
     )
+    await db[GMAIL_SEND_OPERATIONS].create_indexes(
+        [
+            IndexModel([("id", ASCENDING)], name="gmail_send_operation_id", unique=True),
+            IndexModel([("expires_at", ASCENDING)], name="gmail_send_operation_expiry", expireAfterSeconds=0),
+        ]
+    )
+
     await db.gmail_oauth_tokens.create_indexes(
         [IndexModel([("id", ASCENDING)], name="gmail_oauth_token_id", unique=True)]
     )
@@ -657,12 +800,14 @@ async def run_full_sync() -> dict[str, Any]:
             result = await insert_snapshot(snapshot, run_id)
             return {"ok": True, "run_id": run_id, **result}
         except (ShopifyConfigurationError, ShopifyAPIError, PyMongoError, ValueError) as exc:
-            logger.exception("Shopify synchronization failed")
+            safe_error = safe_provider_error_summary(exc) or "Shopify synchronization failed"
+            logger.error("Shopify synchronization failed: %s", safe_error)
             await db.sync_runs.update_one(
                 {"id": run_id},
-                {"$set": {"status": "failed", "failed_at": now_iso(), "error": str(exc)}},
+                {"$set": {"status": "failed", "failed_at": now_iso(), "error": safe_error}},
             )
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            raise HTTPException(status_code=502, detail=safe_error) from exc
+
         except Exception as exc:
             logger.exception("Unexpected Shopify synchronization failure")
             await db.sync_runs.update_one(
@@ -672,10 +817,7 @@ async def run_full_sync() -> dict[str, Any]:
             raise HTTPException(status_code=500, detail="Unexpected synchronization failure") from exc
 
 
-@app.on_event("startup")
-async def initialize_application() -> None:
-    await ensure_indexes()
-    logging.info("Shopify canonical schema initialized; mock seeding is disabled")
+
 
 
 @api.get("/")
@@ -712,7 +854,8 @@ async def shopify_status(live: bool = Query(default=True)) -> dict[str, Any]:
         try:
             details = await asyncio.to_thread(verify_connection)
         except (ShopifyConfigurationError, ShopifyAPIError) as exc:
-            details = {**details, "status": "Error", "detail": str(exc)}
+            details = {**details, "status": "Error", "detail": safe_provider_error_summary(exc) or "Shopify connection check failed"}
+
     return {
         **details,
         "schema_version": SCHEMA_VERSION,
@@ -734,54 +877,106 @@ async def sync_runs() -> list[dict[str, Any]]:
 
 @api.get("/overview")
 async def overview() -> dict[str, Any]:
+    """Build dashboard facts in MongoDB without materializing the active snapshot in the API process."""
     sync_id = await active_sync_id()
-    orders = await db.orders.find({"sync_id": sync_id}, NO_ID).sort("processed_at", DESCENDING).to_list(None)
-    products = await db.products.find({"sync_id": sync_id}, NO_ID).to_list(None)
-    inventory = await db.inventory_items.find({"sync_id": sync_id}, NO_ID).to_list(None)
-    meta = await active_sync_document()
-
-    financial = Counter(order.get("financial_status") or "UNKNOWN" for order in orders)
-    fulfillment = Counter(order.get("fulfillment_status") or "UNKNOWN" for order in orders)
-    unfulfilled = [order for order in orders if order.get("fulfillment_status") != "FULFILLED" and not order.get("cancelled_at")]
-    refunded = [order for order in orders if money_amount((order.get("money") or {}).get("refunded")) > 0]
-    gross_sales = round(sum(money_amount((order.get("money") or {}).get("current_total")) for order in orders), 2)
-    refunded_total = round(sum(money_amount((order.get("money") or {}).get("refunded")) for order in orders), 2)
-    available = sum(int((item.get("quantities") or {}).get("available") or 0) for item in inventory)
-    low_stock = [
-        item for item in inventory
-        if item.get("tracked") and int((item.get("quantities") or {}).get("available") or 0) <= 3
+    match = {"sync_id": sync_id}
+    orders_pipeline = [
+        {"$match": match},
+        {"$facet": {
+            "summary": [
+                {"$group": {
+                    "_id": None,
+                    "orders": {"$sum": 1},
+                    "gross_sales": {"$sum": {"$ifNull": ["$money.current_total.amount", 0]}},
+                    "unfulfilled": {"$sum": {"$cond": [{"$and": [
+                        {"$ne": [{"$ifNull": ["$fulfillment_status", "UNKNOWN"]}, "FULFILLED"]},
+                        {"$eq": [{"$ifNull": ["$cancelled_at", None]}, None]},
+                    ]}, 1, 0]}},
+                    "refunded_orders": {"$sum": {"$cond": [{"$gt": [{"$ifNull": ["$money.refunded.amount", 0]}, 0]}, 1, 0]}},
+                    "refunded_total": {"$sum": {"$ifNull": ["$money.refunded.amount", 0]}},
+                }},
+                {"$project": {"_id": 0}},
+            ],
+            "financial_statuses": [
+                {"$group": {"_id": {"$ifNull": ["$financial_status", "UNKNOWN"]}, "count": {"$sum": 1}}},
+            ],
+            "fulfillment_statuses": [
+                {"$group": {"_id": {"$ifNull": ["$fulfillment_status", "UNKNOWN"]}, "count": {"$sum": 1}}},
+            ],
+            "recent_orders": [
+                {"$sort": {"processed_at": DESCENDING}},
+                {"$limit": 8},
+            ],
+            "top_products": [
+                {"$unwind": "$line_items"},
+                {"$group": {
+                    "_id": {"$ifNull": ["$line_items.product_title", {"$ifNull": ["$line_items.title", "Unknown product"]}]},
+                    "quantity": {"$sum": {"$ifNull": ["$line_items.quantity", 0]}},
+                    "sales": {"$sum": {"$ifNull": ["$line_items.discounted_total.amount", 0]}},
+                }},
+                {"$sort": {"sales": DESCENDING, "_id": ASCENDING}},
+                {"$limit": 8},
+                {"$project": {"_id": 0, "title": "$_id", "quantity": 1, "sales": 1}},
+            ],
+        }},
     ]
-
-    product_sales: dict[str, dict[str, Any]] = defaultdict(lambda: {"quantity": 0, "sales": 0.0})
-    for order in orders:
-        for item in order.get("line_items") or []:
-            key = item.get("product_title") or item.get("title") or "Unknown product"
-            product_sales[key]["quantity"] += int(item.get("quantity") or 0)
-            product_sales[key]["sales"] += money_amount(item.get("discounted_total"))
-    top_products = [
-        {"title": title, "quantity": values["quantity"], "sales": round(values["sales"], 2)}
-        for title, values in sorted(product_sales.items(), key=lambda pair: pair[1]["sales"], reverse=True)[:8]
+    inventory_pipeline = [
+        {"$match": match},
+        {"$group": {
+            "_id": None,
+            "available_inventory": {"$sum": {"$ifNull": ["$quantities.available", 0]}},
+            "low_stock_variants": {"$sum": {"$cond": [{"$and": [
+                {"$eq": ["$tracked", True]},
+                {"$lte": [{"$ifNull": ["$quantities.available", 0]}, 3]},
+            ]}, 1, 0]}},
+        }},
+        {"$project": {"_id": 0}},
     ]
+    low_stock_pipeline = [
+        {"$match": {"sync_id": sync_id, "tracked": True, "quantities.available": {"$lte": 3}}},
+        {"$sort": {"quantities.available": ASCENDING, "product_title": ASCENDING}},
+        {"$limit": 12},
+    ]
+    started = time.perf_counter()
+    order_result, inventory_result, low_stock, active_products, shop, meta = await asyncio.gather(
+        db.orders.aggregate(orders_pipeline).to_list(length=1),
+        db.inventory_items.aggregate(inventory_pipeline).to_list(length=1),
+        db.inventory_items.aggregate(low_stock_pipeline).to_list(length=12),
+        db.products.count_documents({"sync_id": sync_id, "status": "ACTIVE"}),
+        db.shop.find_one({"sync_id": sync_id}, NO_ID),
+        active_sync_document(),
+    )
+    logger.info(
+        "performance_database collection=snapshot operation=overview_aggregation returned=%s duration_ms=%.2f",
+        len(order_result),
+        (time.perf_counter() - started) * 1000,
+    )
+    order_data = order_result[0] if order_result else {}
+    summary = (order_data.get("summary") or [{}])[0]
+    inventory_summary = (inventory_result or [{}])[0]
     return {
         "source": "shopify",
-        "currency": ((await db.shop.find_one({"sync_id": sync_id}, NO_ID)) or {}).get("currency") or "CHF",
+        "currency": (shop or {}).get("currency") or "CHF",
         "last_sync": (meta or {}).get("last_synced_at"),
         "sync": meta,
         "cards": {
-            "orders": len(orders),
-            "gross_sales": gross_sales,
-            "unfulfilled": len(unfulfilled),
-            "refunded_orders": len(refunded),
-            "refunded_total": refunded_total,
-            "active_products": sum(product.get("status") == "ACTIVE" for product in products),
-            "available_inventory": available,
-            "low_stock_variants": len(low_stock),
+            "orders": int(summary.get("orders") or 0),
+            "gross_sales": round(float(summary.get("gross_sales") or 0), 2),
+            "unfulfilled": int(summary.get("unfulfilled") or 0),
+            "refunded_orders": int(summary.get("refunded_orders") or 0),
+            "refunded_total": round(float(summary.get("refunded_total") or 0), 2),
+            "active_products": active_products,
+            "available_inventory": int(inventory_summary.get("available_inventory") or 0),
+            "low_stock_variants": int(inventory_summary.get("low_stock_variants") or 0),
         },
-        "financial_statuses": dict(financial),
-        "fulfillment_statuses": dict(fulfillment),
-        "recent_orders": [order_with_derived(order) for order in orders[:8]],
-        "low_stock": low_stock[:12],
-        "top_products": top_products,
+        "financial_statuses": aggregate_counter(order_data.get("financial_statuses") or []),
+        "fulfillment_statuses": aggregate_counter(order_data.get("fulfillment_statuses") or []),
+        "recent_orders": [order_with_derived(order) for order in order_data.get("recent_orders") or []],
+        "low_stock": low_stock,
+        "top_products": [
+            {**product, "quantity": int(product.get("quantity") or 0), "sales": round(float(product.get("sales") or 0), 2)}
+            for product in order_data.get("top_products") or []
+        ],
     }
 
 
@@ -838,13 +1033,15 @@ async def list_orders(
     query = combine_mongo_filters(*filters)
 
     if filter in age_filters:
-        # Business-day age is deliberately retained as an exact Python rule. All
-        # inexpensive user filters still run in MongoDB before this compatibility path.
+        # Business-day age is deliberately retained as an exact Python rule. A
+        # conservative calendar bound reduces candidates without excluding a match.
+        threshold = age_filters[filter]
+        query = combine_mongo_filters(query, {"processed_at": {"$lte": business_day_candidate_cutoff(threshold)}})
         started = time.perf_counter()
         candidates = await db.orders.find(query, NO_ID).sort("processed_at", DESCENDING).to_list(None)
         orders = [
             order for order in candidates
-            if business_day_age(order.get("processed_at")) > age_filters[filter]
+            if business_day_age(order.get("processed_at")) > threshold
             and order.get("fulfillment_status") != "FULFILLED"
         ]
         logger.info(
@@ -934,7 +1131,12 @@ async def order_write_removed(order_id: str, payload: dict[str, Any] = Body(defa
 
 
 @api.get("/products")
-async def list_products(q: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+async def list_products(
+    q: str | None = None,
+    status: str | None = None,
+    limit: int = Query(default=250, ge=1, le=500),
+) -> list[dict[str, Any]]:
+
     sync_id = await active_sync_id()
     query = combine_mongo_filters(
         {"sync_id": sync_id},
@@ -942,7 +1144,8 @@ async def list_products(q: str | None = None, status: str | None = None) -> list
         {"status": status.upper()} if status else None,
     )
     started = time.perf_counter()
-    products = await db.products.find(query, NO_ID).sort("title", ASCENDING).to_list(None)
+    products = await db.products.find(query, NO_ID).sort("title", ASCENDING).to_list(length=limit)
+
     logger.info(
         "performance_database collection=products operation=list returned=%s duration_ms=%.2f",
         len(products),
@@ -955,8 +1158,9 @@ async def list_products(q: str | None = None, status: str | None = None) -> list
 async def get_product(product_id: str) -> dict[str, Any]:
     product = await find_active("products", product_id)
     sync_id = product["sync_id"]
-    product["variants"] = await db.variants.find({"sync_id": sync_id, "shopify_product_id": product["shopify_id"]}, NO_ID).sort("title", ASCENDING).to_list(None)
-    product["inventory"] = await db.inventory_items.find({"sync_id": sync_id, "shopify_product_id": product["shopify_id"]}, NO_ID).to_list(None)
+    product["variants"] = await db.variants.find({"sync_id": sync_id, "shopify_product_id": product["shopify_id"]}, NO_ID).sort("title", ASCENDING).to_list(length=250)
+    product["inventory"] = await db.inventory_items.find({"sync_id": sync_id, "shopify_product_id": product["shopify_id"]}, NO_ID).to_list(length=250)
+
     return product
 
 
@@ -1001,7 +1205,8 @@ async def get_inventory(item_id: str) -> dict[str, Any]:
             "cancelled_at": None,
         },
         NO_ID,
-    ).sort("processed_at", ASCENDING).to_list(None)
+        ).sort("processed_at", ASCENDING).to_list(length=250)
+
     return item
 
 
@@ -1032,28 +1237,28 @@ async def get_customer(customer_id: str) -> dict[str, Any]:
         order_with_derived(order)
         for order in await db.orders.find(
             {"sync_id": customer["sync_id"], "customer.shopify_id": customer["shopify_id"]}, NO_ID
-        ).sort("processed_at", DESCENDING).to_list(None)
+        ).sort("processed_at", DESCENDING).to_list(length=250)
     ]
     return customer
 
 
 @api.get("/fulfillment")
 @api.get("/fulfillments")
-async def list_fulfillments() -> list[dict[str, Any]]:
+async def list_fulfillments(limit: int = Query(default=250, ge=1, le=500)) -> list[dict[str, Any]]:
     sync_id = await active_sync_id()
-    return await db.fulfillments.find({"sync_id": sync_id}, NO_ID).sort("created_at", DESCENDING).to_list(None)
+    return await db.fulfillments.find({"sync_id": sync_id}, NO_ID).sort("created_at", DESCENDING).to_list(length=limit)
 
 
 @api.get("/refunds")
-async def list_refunds() -> list[dict[str, Any]]:
+async def list_refunds(limit: int = Query(default=250, ge=1, le=500)) -> list[dict[str, Any]]:
     sync_id = await active_sync_id()
-    return await db.refunds.find({"sync_id": sync_id}, NO_ID).sort("created_at", DESCENDING).to_list(None)
+    return await db.refunds.find({"sync_id": sync_id}, NO_ID).sort("created_at", DESCENDING).to_list(length=limit)
 
 
 @api.get("/returns")
-async def list_returns() -> list[dict[str, Any]]:
+async def list_returns(limit: int = Query(default=250, ge=1, le=500)) -> list[dict[str, Any]]:
     sync_id = await active_sync_id()
-    return await db.returns.find({"sync_id": sync_id}, NO_ID).sort("created_at", DESCENDING).to_list(None)
+    return await db.returns.find({"sync_id": sync_id}, NO_ID).sort("created_at", DESCENDING).to_list(length=limit)
 
 
 @api.get("/returns/{return_id}")
@@ -1125,12 +1330,28 @@ async def get_integration_connection(connection_id: str) -> dict[str, Any]:
 
 
 @api.get("/integrations/{connection_id}/health")
-async def evaluate_integration_health(connection_id: str) -> dict[str, Any]:
+async def get_integration_health(connection_id: str) -> dict[str, Any]:
+    """Read the last safe health record without creating evidence as a GET side effect."""
     connection = await integration_connection_or_404(connection_id)
-    health = connection_health(connection)
-    health["id"] = str(uuid.uuid4())
+    latest = await db[INTEGRATION_HEALTH].find_one(
+        {"connection_id": connection_id},
+        NO_ID,
+        sort=[("checked_at", DESCENDING)],
+    )
+    return latest or connection_health(connection)
+
+
+@api.post("/integrations/{connection_id}/health")
+async def record_integration_health(connection_id: str) -> dict[str, Any]:
+    """Record an explicitly requested local readiness check with bounded retention."""
+    connection = await integration_connection_or_404(connection_id)
+    health = {
+        **connection_health(connection),
+        "id": str(uuid.uuid4()),
+        "expires_at": retention_expiry(INTEGRATION_HEALTH_RETENTION_DAYS),
+    }
     await db[INTEGRATION_HEALTH].insert_one(health)
-    return {key: value for key, value in health.items() if key != "_id"}
+    return {key: value for key, value in health.items() if key not in {"_id", "expires_at"}}
 
 
 @api.get("/integrations/{connection_id}/audit")
@@ -1246,7 +1467,8 @@ async def global_search(q: str) -> dict[str, list[dict[str, Any]]]:
         return {"orders": [], "products": [], "customers": [], "inventory": []}
     orders_result, products, customers_result, inventory_result = await asyncio.gather(
         list_orders(q=q, page=1, page_size=8),
-        list_products(q=q),
+                list_products(q=q, limit=8),
+
         list_customers(q=q, page=1, page_size=8),
         list_inventory(q=q, page=1, page_size=8),
     )
@@ -1256,12 +1478,6 @@ async def global_search(q: str) -> dict[str, list[dict[str, Any]]]:
         "customers": customers_result["items"],
         "inventory": inventory_result["items"],
     }
-
-
-@api.get("/work-items")
-async def empty_work_items(view: str = "all-open") -> dict[str, Any]:
-    del view
-    return {"items": [], "counts": {}}
 
 
 @api.get("/conversations")
@@ -1287,8 +1503,8 @@ async def empty_purchasing() -> dict[str, list[Any]]:
 # Gmail Integration (Google OAuth 2.0 + Gmail REST API)
 # ---------------------------------------------------------------------------
 
-from fastapi.responses import RedirectResponse
 from gmail_service import (
+
     GmailPausedError,
     GmailServiceError,
     complete_oauth_authorization,
@@ -1463,18 +1679,27 @@ async def gmail_generate_ai_reply(
 
 @api.post("/gmail/send")
 async def gmail_send_message(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    """Send an explicitly confirmed reply in its existing Gmail conversation.
+    """Send one explicitly confirmed existing-thread reply per idempotency key.
 
     Recipients, subject, and RFC threading headers are derived from the source
     Gmail thread. Browser-provided recipient headers are intentionally ignored.
     """
     thread_id = str(payload.get("thread_id") or "").strip()
     content = str(payload.get("content") or "")
+    idempotency_key = str(payload.get("idempotency_key") or "").strip()
     if not thread_id:
         raise HTTPException(status_code=422, detail="Gmail-Thread-ID ist erforderlich")
+    if not content.strip() or len(content) > 50_000:
+        raise HTTPException(status_code=422, detail="Gmail reply content must contain 1 to 50000 characters")
+    provider_send_started = False
     try:
         await require_active_gmail_connection()
+        replay = await start_gmail_send_operation(thread_id, content, idempotency_key)
+        if replay is not None:
+            return {"ok": True, "result": replay, "replayed": True}
+        provider_send_started = True
         result = await send_thread_reply(db, thread_id, content)
+        await complete_gmail_send_operation(idempotency_key, result)
         await append_integration_audit(
             GMAIL_CONNECTION_ID,
             local_operator_label(),
@@ -1483,26 +1708,32 @@ async def gmail_send_message(payload: dict[str, Any] = Body(...)) -> dict[str, A
             "active",
             "active",
         )
-        return {"ok": True, "result": result}
+        return {"ok": True, "result": result, "replayed": False}
     except GmailServiceError as exc:
+        if provider_send_started and idempotency_key and IDEMPOTENCY_KEY_PATTERN.fullmatch(idempotency_key):
+            await mark_gmail_send_outcome_unknown(idempotency_key)
         raise gmail_http_exception(exc) from exc
+    except PyMongoError as exc:
+        if provider_send_started and idempotency_key and IDEMPOTENCY_KEY_PATTERN.fullmatch(idempotency_key):
+            await mark_gmail_send_outcome_unknown(idempotency_key)
+            raise HTTPException(
+                status_code=502,
+                detail="Gmail send outcome is unknown; do not retry this confirmation and refresh the thread",
+            ) from exc
+        raise HTTPException(status_code=503, detail="Local Gmail send operation storage is unavailable") from exc
 
 
 app.include_router(api)
 
-cors_origins = [origin.strip() for origin in os.environ.get("CORS_ORIGINS", "").split(",") if origin.strip()]
-if cors_origins:
+if CORS_ORIGINS:
     app.add_middleware(
         CORSMiddleware,
         allow_credentials=True,
-        allow_origins=cors_origins,
+        allow_origins=list(CORS_ORIGINS),
+
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
-
-@app.on_event("shutdown")
-async def shutdown_db_client() -> None:
-    client.close()

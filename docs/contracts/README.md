@@ -13,7 +13,9 @@ The Gmail contract is separated into [`gmail.md`](gmail.md) because Gmail has OA
 | Base path | `/api` |
 | Representation | JSON request and response bodies unless an OAuth route redirects the browser. |
 | Authentication | None at the application layer. Compose publishes only the frontend loopback port by default; do not treat this as an Internet-facing API. |
+| Local browser mutation guard | For `POST`, `PUT`, `PATCH`, and `DELETE`, browser requests must be same-origin (or an explicit development CORS origin) and include `X-Erydez-Request: local-console`. Cross-site browser mutations return `403`. This is a request-provenance control, not login or authorization; local CLI calls without browser `Origin`/Fetch-Metadata remain supported. |
 | CORS | Disabled unless `CORS_ORIGINS` is non-empty. When configured, it enables credentials and all methods/headers for the listed origins. |
+
 | API schema | FastAPI provides runtime OpenAPI from implementation annotations, but handlers return direct JSON dictionaries/lists rather than explicit Pydantic response models. |
 | Performance timing | API responses include a `Server-Timing: app;dur=…` duration for browser diagnostics. Backend logs record only method, route template, status, duration, response-byte hint, and aggregate database timings; they never log query text, customer fields, Gmail content, credentials, or provider payloads. |
 | Error body | FastAPI `HTTPException` responses use `{ "detail": "..." }`; request parsing/validation may return FastAPI’s standard `422` detail array. |
@@ -54,15 +56,17 @@ All canonical routes below require an active snapshot. Without one, they return 
 | `POST /api/orders/{order_id}/notes` | Any body | Legacy write route; always `409`. |
 | `POST /api/orders/{order_id}/pause-updates` | Any body | Legacy write route; always `409`. |
 | `POST /api/orders/{order_id}/timeline` | Any body | Legacy write route; always `409`. |
-| `GET /api/products` | `q`, `status` | Active product list, sorted by title. Text/status predicates execute against the active MongoDB snapshot before records are returned. |
+| `GET /api/products` | `q`, `status`, `limit` 1–500; default 250 | Active product list, sorted by title and bounded by `limit`. Text/status predicates execute against the active MongoDB snapshot before records are returned. |
+
 | `GET /api/products/{product_id}` | Normalized ID or Shopify GID | Product plus linked active `variants` and `inventory`; `404` when absent. |
 | `GET /api/inventory` | `q`, `low_stock` boolean, `page` ≥ 1, `page_size` 1–250 | Paginated inventory items. Text/low-stock predicates execute against the active MongoDB snapshot before page data is transferred. Low stock means tracked with `quantities.available <= 3`. |
 | `GET /api/inventory/{item_id}` | Normalized ID, Shopify GID, or SKU | Inventory item plus linked `variant`, `product`, and unfulfilled `open_orders`; `404` when absent. |
 | `GET /api/customers` | `q`, `page` ≥ 1, `page_size` 1–250 | Paginated active customers. Text predicates execute against the active MongoDB snapshot before page data is transferred. |
 | `GET /api/customers/{customer_id}` | Normalized ID or Shopify GID | Customer plus linked active orders; `404` when absent. |
-| `GET /api/fulfillment` and `GET /api/fulfillments` | None | Same newest-first active fulfillment list. |
-| `GET /api/refunds` | None | Newest-first active refund list. |
-| `GET /api/returns` | None | Newest-first active return list. |
+| `GET /api/fulfillment` and `GET /api/fulfillments` | `limit` 1–500; default 250 | Same bounded newest-first active fulfillment list. |
+| `GET /api/refunds` | `limit` 1–500; default 250 | Bounded newest-first active refund list. |
+| `GET /api/returns` | `limit` 1–500; default 250 | Bounded newest-first active return list. |
+
 | `GET /api/returns/{return_id}` | Normalized ID or Shopify GID | One active return; `404` when absent. |
 | `GET /api/reports` | None | Read-only report derived from `overview`, including current `refreshed_at`. |
 | `GET /api/search` | Required `q` string | Up to eight matching orders, products, customers, and inventory items per family. The independent active-snapshot family queries run concurrently. Empty/whitespace query returns empty arrays. |
@@ -106,14 +110,16 @@ Money values are normalized into a money bag with `amount`, `currency`, `present
 
 ## Integration Control and Local Evidence
 
-These routes manage console-owned integration records. They do not synchronize, mutate, or store provider payloads. `GET /api/integrations/{connection_id}/health` is intentionally a GET route that also inserts a health snapshot.
+These routes manage console-owned integration records. They do not synchronize, mutate, or store provider payloads. Health history is created only by the explicit `POST` route; the `GET` route is side-effect free. Safe health and audit evidence has a configurable MongoDB TTL retention period.
 
 | Method and path | Request inputs | Behavior |
 |---|---|---|
 | `GET /api/integrations` | None | Shopify summary followed by console integration records with safe public connection and computed health data. |
 | `POST /api/integrations/gmail/initialize` | JSON `{ "reason": string }`, at least 8 characters | Creates the one local Gmail readiness record. Returns `409` if it already exists; no OAuth or Gmail data action occurs. |
 | `GET /api/integrations/{connection_id}` | Path ID | Safe connection fields plus latest recorded or computed health; `404` if unknown. |
-| `GET /api/integrations/{connection_id}/health` | Path ID | Computes and persists a safe health snapshot; `404` if unknown. |
+| `GET /api/integrations/{connection_id}/health` | Path ID | Returns the latest retained safe health snapshot or a current computed health view; it never writes evidence. `404` if unknown. |
+| `POST /api/integrations/{connection_id}/health` | Empty JSON body accepted | Explicitly computes and persists one safe health snapshot with configured retention; `404` if unknown. |
+
 | `GET /api/integrations/{connection_id}/audit` | Path ID | Up to 100 newest-first console audit events; `404` if unknown. |
 | `GET /api/audit-timeline` | `limit` 1–500; default 250 | Read-only, newest-first safe audit timeline and scope note. |
 | `GET /api/provider-ledger` | `limit` 1–500; default 250 | Merged local Shopify sync-run and integration-control evidence; no provider events or payloads. |
@@ -133,7 +139,7 @@ Public integration records include ID, provider, environment, display identity, 
 | `GET /api/gmail/threads` | On-demand list of compact normalized thread summaries, Gmail-search query support, 1–100 results, optional page token. A short-lived in-memory access token and bounded metadata-request concurrency reduce provider round trips without creating a mailbox mirror. |
 | `GET /api/gmail/threads/{thread_id}` | Full normalized on-demand thread. |
 | `POST /api/gmail/threads/{thread_id}/ai-reply` | Returns an editable draft only. |
-| `POST /api/gmail/send` | Sends an explicitly requested existing-thread reply using server-derived addressing/threading metadata. |
+| `POST /api/gmail/send` | Requires JSON `{ "thread_id", "content", "idempotency_key" }`. Sends one explicitly requested existing-thread reply using server-derived addressing/threading metadata. A completed key with the same thread/content returns the stored safe result; an unknown provider outcome returns `502` and must not be retried with the same confirmation. |
 
 See [`gmail.md`](gmail.md) for the detailed Gmail request, response, safety, and failure contract.
 
@@ -143,12 +149,12 @@ The following routes remain so old pages can receive an empty response instead o
 
 | Route | Current response |
 |---|---|
-| `GET /api/work-items` | `{ "items": [], "counts": {} }` |
+
 | `GET /api/conversations`, `/api/appointments`, `/api/automations`, `/api/approvals`, `/api/notifications` | `[]` |
 | `GET /api/automations/runs` | `[]` |
 | `GET /api/purchasing` | `{ "suppliers": [], "purchase_orders": [] }` |
 
-The API client also retains obsolete helpers for now-unnavigated mock-era pages. Their presence is not a compatibility commitment for successful mutation; many target routes have no server implementation or intentionally return `409`.
+The API client retains only legacy helpers required by remaining non-primary pages. Their presence is not a compatibility commitment for successful mutation; many target routes have no server implementation or intentionally return `409`.
 
 ## Validation and Failure Semantics
 
@@ -176,6 +182,10 @@ The API client also retains obsolete helpers for now-unnavigated mock-era pages.
 | Backend | `DB_NAME` | Always | MongoDB database name. |
 | Backend | `CORS_ORIGINS` | Only separate browser origins | Comma-separated allowlist; blank disables CORS middleware. |
 | Backend | `ERYDEZ_LOCAL_OPERATOR_LABEL` | Optional | Safe attribution label for console-owned audit evidence. |
+| Backend | `INTEGRATION_HEALTH_RETENTION_DAYS` | Optional; default 90 | Positive integer TTL retention for safe integration-health snapshots. |
+| Backend | `INTEGRATION_AUDIT_RETENTION_DAYS` | Optional; default 365 | Positive integer TTL retention for safe console audit events. |
+| Backend | `GMAIL_SEND_OPERATION_RETENTION_HOURS` | Optional; default 24 | Positive integer TTL retention for hashed Gmail send idempotency metadata; no message body is stored. |
+
 | Shopify | `SHOPIFY_STORE_DOMAIN` | Shopify status/sync | MyShopify domain; protocol is stripped and suffix normalized by code. |
 | Shopify | `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET` | Client-credentials mode | Credentials used to obtain a short-lived Admin API token. |
 | Shopify | `SHOPIFY_ADMIN_ACCESS_TOKEN` | Static-token alternative | Used only when it has the expected Admin-token form; client credentials remain alternative. |

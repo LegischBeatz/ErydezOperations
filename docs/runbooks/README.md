@@ -13,6 +13,8 @@ These runbooks operate the current Docker Compose implementation of E-RYDEZ Oper
 
 The Compose frontend publishes plain HTTP only to `127.0.0.1:${ERYDEZ_PORT:-8082}`. There is no application login, authorization, TLS, tenant boundary, reverse-proxy access policy, or public-access design. Do not change the bind address, port-forward the service, or publish it through a public proxy without an explicit security implementation and reviewed decision record.
 
+Nginx supplies a restrictive same-origin CSP plus MIME, frame, referrer, and Permissions-Policy headers as browser defense in depth. FastAPI rejects cross-site browser mutations and requires the central frontend client’s `X-Erydez-Request: local-console` header for browser `POST`/`PATCH`/other unsafe methods. This request-provenance safeguard is not an identity system: it does not make the service safe for remote access, and documented local CLI calls without browser `Origin` or Fetch-Metadata remain permitted.
+
 Shopify snapshots can contain customer and commerce data. Gmail authorization data includes an encrypted refresh token. Keep `.env`, Docker/host access, browser access, MongoDB volume access, container logs, and backups restricted to approved operators. Never put secrets, OAuth codes, raw provider payloads, or customer exports in source control, issue text, screenshots, or support artifacts.
 
 ## Prerequisites and Configuration
@@ -24,6 +26,8 @@ Shopify snapshots can contain customer and commerce data. Gmail authorization da
 | Required Compose values | `MONGO_ROOT_PASSWORD`, `SHOPIFY_STORE_DOMAIN`, `SHOPIFY_CLIENT_ID`, and `SHOPIFY_CLIENT_SECRET` must be non-empty for Compose interpolation. |
 | Optional Gmail values | Google OAuth client ID/secret, exact redirect URI, and a valid Fernet key are needed only to use Gmail OAuth. |
 | Optional AI values | `OPENAI_API_KEY` enables AI drafts only; Gmail manual reading/replying does not depend on it. |
+| Optional local retention | `INTEGRATION_HEALTH_RETENTION_DAYS` (90), `INTEGRATION_AUDIT_RETENTION_DAYS` (365), and `GMAIL_SEND_OPERATION_RETENTION_HOURS` (24) are positive-integer defaults. They retain safe local evidence and hashed Gmail-send metadata only; no message content is stored for idempotency. |
+
 | Network | The backend needs outbound provider access for Shopify sync, Google OAuth/Gmail operations, and optional draft generation. |
 
 Use `.env.example` as the variable-name contract. Do not copy real values into documentation. `docker compose config --quiet` validates Compose interpolation and structure but does not prove provider credentials, scopes, or network reachability.
@@ -73,7 +77,7 @@ A fresh stack can report `ready` with `shopify_snapshot_active: false`. In that 
 
 ## Routine Operation
 
-The Settings page exposes the complete Shopify sync action, current snapshot state, run history, safe integration readiness controls, and Gmail control-plane evidence. The application shell also exposes Shopify sync and active-snapshot status.
+The Settings page exposes the complete Shopify sync action, current snapshot state, run history, safe integration readiness controls, and Gmail control-plane evidence. The application shell also exposes Shopify sync and active-snapshot status. A displayed integration health read is side-effect free; use the explicit **Check readiness** action to append one safe health record subject to TTL retention.
 
 Use the read-only endpoints below for safe diagnostics; do not use them as a substitute for the documented provider workflow.
 
@@ -109,7 +113,8 @@ The repository does not ship a backup scheduler, retention policy, or restore sc
 
 ## Local Development and Validation
 
-The packaged Compose deployment is the operational path. Nginx compresses text responses and caches only content-hashed `static/` build assets for one year; `index.html` is revalidated and `/api` responses are not browser-cached by this rule. Do not add a blanket API cache because active-snapshot, Gmail, and integration responses have different freshness and privacy boundaries. Separate development processes are supported by the code but require explicit local configuration.
+The packaged Compose deployment is the operational path. Nginx compresses text responses and caches only content-hashed `static/` build assets for one year; `index.html` is revalidated and `/api` responses are not browser-cached by this rule. Do not add a blanket API cache because active-snapshot, Gmail, and integration responses have different freshness and privacy boundaries. Separate development processes are supported by the code but require explicit local configuration. The central API client automatically supplies the required local browser-mutation header; do not replace it with ad hoc Axios/fetch calls. For an external development origin, include its exact origin in `CORS_ORIGINS` and restart the backend.
+
 
 ```bash
 # Backend: MONGO_URL and DB_NAME are required before importing server.py.
@@ -146,11 +151,13 @@ No repository-defined frontend lint script or TypeScript type-check command exis
 | Sync returns `409` | Another sync owns the process-local lock. | Wait and inspect `/api/shopify/sync-runs`. |
 | Sync returns `502` or validation failure | Shopify credential/scope/network failure or incomplete/inconsistent provider snapshot. | Preserve current active snapshot; inspect safe run/log evidence; use the Shopify runbook. |
 | Browser calls `undefined/api` | Separate frontend development lacks `REACT_APP_BACKEND_URL`. | Set the backend origin and restart the frontend dev server. |
-| Browser sees CORS failure in separate development | Browser origin absent from `CORS_ORIGINS`. | Add the exact development origin and restart backend; production uses same-origin proxying. |
+| Browser sees CORS failure or `403` for a local mutation in separate development | Browser origin is absent from `CORS_ORIGINS`, or code bypasses the central API client and therefore omits `X-Erydez-Request: local-console`. | Add the exact development origin, use the central API client, and restart backend after changing configuration; production uses same-origin proxying. |
+
 | Gmail reports configuration required | OAuth client variables, redirect URI, or Fernet key missing/invalid. | Configure local environment precisely; see Gmail runbook. |
 | Gmail reports `401` | Refresh token absent, expired, invalid, or revoked. | Reauthorize through browser OAuth. |
 | Gmail access reports `409` | Local lifecycle is paused/disconnect pending/disconnected. | Resolve lifecycle through Settings before retrying. |
 | AI drafts unavailable | No optional API key, invalid key, provider error, or quota exhaustion. | Use manual reply or resolve optional AI configuration; do not bypass Gmail confirmation. |
+| Gmail send returns outcome-unknown `502` | The provider may have accepted the confirmed reply but local completion evidence could not be recorded safely. | Do **not** click send again for the same confirmation. Refresh and inspect the Gmail thread, then create a new explicit confirmation only if a reply is absent. |
 
 ## Escalation Record
 

@@ -32,7 +32,7 @@ The status endpoint intentionally exposes missing configuration names and the co
 | `GET /api/gmail/threads` | Optional `q`, `page_token`; `max_results` integer 1–100, default 25 | Retrieves a page of compact normalized thread summaries, defaults `q` to `in:inbox -category:promotions -category:social`, records safe refresh metadata. The encrypted refresh token remains persistent; the resulting access token is held only in the backend process until shortly before its provider expiry. Summary metadata reads use bounded provider concurrency and do not create a mailbox mirror. | `401` if not authorized; `409` if lifecycle blocked; `502` for provider/network failures. |
 | `GET /api/gmail/threads/{thread_id}` | Thread ID up to 256 characters | Retrieves one complete normalized thread with chronological messages. | `502` for invalid ID/provider failure; `401`/`409` as above. |
 | `POST /api/gmail/threads/{thread_id}/ai-reply` | Optional JSON `sender_name`, `language`, `instructions`, `profile_id` | Reads the thread and returns an editable draft plus a non-persistent context plan. `sender_name` is limited to 100 characters; `language` to 50; `instructions` to 500; `profile_id` to 80. Unknown language/profile hints are ignored in favour of server-side detection. No Gmail send or MongoDB draft write occurs. | `422` for empty thread; `503` for missing AI config; `402` for detected AI quota exhaustion; `502` for other generation/provider failure. |
-| `POST /api/gmail/send` | JSON `{ "thread_id": string, "content": string }` | Reloads the source thread, derives reply metadata, sends through Gmail, records safe audit evidence, and returns safe message result. | `422` for absent thread ID; `502` for empty/over-50,000-character content, invalid recipient, or provider failure; `401`/`409` as above. |
+| `POST /api/gmail/send` | JSON `{ "thread_id": string, "content": string, "idempotency_key": string }`; key is 16–128 URL-safe characters and is created when the operator prepares the second confirmation | Reloads the source thread, derives reply metadata, sends through Gmail, records safe audit evidence, and returns a safe message result. Repeating a completed key with identical thread/content returns the prior safe result without another provider call. | `422` for absent/invalid input; `409` for key reuse with different content or a pending/unknown prior outcome; `502` when a provider outcome cannot be safely confirmed; `401`/`409` lifecycle failures as above. |
 
 ## Status Shape
 
@@ -158,20 +158,22 @@ The UI keeps the optional guidance and the optional profile override only in com
 
 ## Send Contract
 
-The send request must contain a non-empty `thread_id` and `content`. The browser must not supply recipients, subject lines, or arbitrary threading headers. The server enforces these rules:
+The send request must contain a non-empty `thread_id`, `content`, and `idempotency_key`. The browser must not supply recipients, subject lines, or arbitrary threading headers. The key is generated only after the visible `Senden vorbereiten` confirmation; it is retained with a hash of thread/content and safe result metadata for a limited local retry window. The message body is never persisted for idempotency. The server enforces these rules:
 
-1. It rejects empty content and content longer than 50,000 characters.
-2. It fetches the full source Gmail thread again rather than trusting browser thread data.
-3. It selects the most recent inbound source message; if none exists, it falls back to the last thread message.
-4. It extracts and validates the recipient from that message’s `From` header. Newline-bearing or invalid addresses are rejected.
-5. It keeps the source subject, adds `In-Reply-To` when a Message-ID exists, and extends `References` with that Message-ID.
-6. It sends the encoded MIME message with the original Gmail `threadId`.
+1. It rejects empty content, content longer than 50,000 characters, and malformed idempotency keys.
+2. It atomically reserves the key. A completed key with an identical thread/content returns its original safe result; a key with different content or an unknown prior provider outcome is not sent again.
+3. It fetches the full source Gmail thread again rather than trusting browser thread data.
+4. It selects the most recent inbound source message; if none exists, it falls back to the last thread message.
+5. It extracts and validates the recipient from that message’s `From` header. Newline-bearing or invalid addresses are rejected.
+6. It keeps the source subject, adds `In-Reply-To` when a Message-ID exists, and extends `References` with that Message-ID.
+7. It sends the encoded MIME message with the original Gmail `threadId`.
 
 A successful response contains only safe result fields:
 
 ```json
 {
   "ok": true,
+  "replayed": false,
   "result": {
     "id": "gmail-message-id",
     "thread_id": "gmail-thread-id",
@@ -181,7 +183,7 @@ A successful response contains only safe result fields:
 }
 ```
 
-The current React UI adds a two-step confirmation (`Senden vorbereiten` followed by `Jetzt senden`) before calling this endpoint. Preserve that control in any client change; it is a UI safeguard in addition to the server-side derivation rules.
+The current React UI adds a two-step confirmation (`Senden vorbereiten` followed by `Jetzt senden`) before calling this endpoint and holds one stable idempotency key for retries of that confirmation. Preserve both controls in any client change; they complement the server-side derivation and duplicate-send safeguards.
 
 ## Error and Compatibility Rules
 
@@ -192,6 +194,7 @@ The current React UI adds a two-step confirmation (`Senden vorbereiten` followed
 | Local lifecycle paused or disconnection pending/disconnected | `409` | Resolve lifecycle state through Integration Control Center before Gmail access. |
 | Invalid/missing thread, draft, or lifecycle input | `422` or safe `502` depending on handler | Correct input and retry only after diagnosis. |
 | Gmail / Google OAuth provider failure | `502` | Inspect bounded backend logs and safe error detail; do not manually edit encrypted token data. |
+| Gmail send outcome unknown after provider attempt | `502` | Do **not** retry the same confirmation. Refresh the provider thread, verify whether the reply exists, then prepare a new explicit confirmation only if needed. |
 | OpenAI quota unavailable | `402` | Use manual reply or restore optional AI-provider capacity; Gmail send remains independently available. |
 
 There is no mailbox synchronization, webhook, push watch, message archive, draft persistence, attachment download, or provider event ledger contract. The short-lived process-memory access-token cache and on-demand list summaries are not a Gmail data mirror and are discarded on backend restart or token expiry. Additions in these areas require new implementation, security review, operational runbook, tests, and a durable decision record.
